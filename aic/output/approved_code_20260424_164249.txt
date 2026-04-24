@@ -1,0 +1,838 @@
+=== КОД ===
+python
+Copy
+Download
+# файл: main.py
+import sys
+import os
+from PySide6.QtWidgets import QApplication
+from models.calculator_model import CalculatorModel
+from viewmodels.calculator_viewmodel import CalculatorViewModel
+from views.calculator_view import CalculatorView
+from voice.voice_input_handler import VoiceInputHandler
+from voice.command_parser import CommandParser
+
+def main():
+    app = QApplication(sys.argv)
+    
+    # Инициализация модели и ViewModel
+    model = CalculatorModel()
+    view_model = CalculatorViewModel(model)
+    
+    # Путь к модели Vosk (проверяем наличие)
+    model_path = "model/vosk-model-small-ru-0.22"
+    if not os.path.exists(model_path):
+        print(f"Предупреждение: Модель Vosk не найдена по пути {model_path}")
+        print("Пожалуйста, скачайте модель и распакуйте её в папку model/")
+        voice_handler = None
+    else:
+        voice_handler = VoiceInputHandler(model_path)
+    
+    command_parser = CommandParser()
+    
+    # Создание View
+    view = CalculatorView(view_model)
+    
+    # Подключение голосового ввода к ViewModel
+    if voice_handler:
+        view_model.set_voice_handler(voice_handler)
+    view_model.set_command_parser(command_parser)
+    
+    # Показываем окно
+    view.show()
+    
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()
+python
+Copy
+Download
+# файл: models/calculator_model.py
+import ast
+import operator
+
+class CalculatorModel:
+    """Модель калькулятора, отвечает за вычисление выражений"""
+    
+    def __init__(self):
+        self.allowed_operators = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+            ast.Pow: operator.pow,
+            ast.USub: operator.neg,
+            ast.UAdd: operator.pos
+        }
+        
+        # Разрешенные типы узлов AST
+        self.allowed_node_types = {
+            ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Num
+        }
+    
+    def evaluate_expression(self, expression: str) -> float:
+        """
+        Вычисляет математическое выражение с поддержкой + - * / ( ) и десятичных дробей
+        Возвращает float, округленный до 10 знаков
+        
+        Args:
+            expression (str): Математическое выражение для вычисления
+            
+        Returns:
+            float: Результат вычисления, округленный до 10 знаков
+            
+        Raises:
+            ZeroDivisionError: При делении на ноль
+            ValueError: При синтаксической ошибке или недопустимых операциях
+        """
+        if not expression or not expression.strip():
+            raise ValueError("Выражение не может быть пустым")
+        
+        try:
+            # Парсим выражение в AST
+            tree = ast.parse(expression, mode='eval')
+            
+            # Проверяем безопасность AST
+            self._validate_ast(tree)
+            
+            # Вычисляем выражение
+            result = self._safe_eval(tree.body)
+            
+            # Округляем до 10 знаков
+            return round(result, 10)
+            
+        except ZeroDivisionError:
+            raise ZeroDivisionError("Деление на ноль")
+        except (SyntaxError, ValueError, TypeError) as e:
+            raise ValueError(f"Синтаксическая ошибка: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Ошибка в выражении: {str(e)}")
+    
+    def _validate_ast(self, node):
+        """
+        Рекурсивно проверяет AST на наличие небезопасных узлов
+        
+        Args:
+            node: Узел AST для проверки
+            
+        Raises:
+            ValueError: Если обнаружен неразрешенный тип узла
+        """
+        # Проверяем текущий узел
+        if type(node) not in self.allowed_node_types and \
+           type(node) not in self.allowed_operators:
+            raise ValueError(f"Обнаружена недопустимая операция: {type(node).__name__}")
+        
+        # Рекурсивно проверяем дочерние узлы
+        for child in ast.iter_child_nodes(node):
+            self._validate_ast(child)
+    
+    def _safe_eval(self, node):
+        """
+        Безопасное вычисление AST узла
+        
+        Args:
+            node: Узел AST для вычисления
+            
+        Returns:
+            Результат вычисления узла
+            
+        Raises:
+            ValueError: При неподдерживаемом типе узла
+        """
+        if isinstance(node, ast.Constant):
+            return node.value
+        elif isinstance(node, ast.Num):  # для старых версий Python
+            return node.n
+        elif isinstance(node, ast.BinOp):
+            left = self._safe_eval(node.left)
+            right = self._safe_eval(node.right)
+            op = self.allowed_operators.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Неподдерживаемая операция: {type(node.op).__name__}")
+            return op(left, right)
+        elif isinstance(node, ast.UnaryOp):
+            operand = self._safe_eval(node.operand)
+            op = self.allowed_operators.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Неподдерживаемая операция: {type(node.op).__name__}")
+            return op(operand)
+        elif isinstance(node, ast.Expression):
+            return self._safe_eval(node.body)
+        else:
+            raise ValueError(f"Неподдерживаемый тип узла: {type(node).__name__}")
+python
+Copy
+Download
+# файл: viewmodels/calculator_viewmodel.py
+from PySide6.QtCore import QObject, Signal
+import threading
+
+class CalculatorViewModel(QObject):
+    """ViewModel для калькулятора, связывает Model и View"""
+    
+    # Сигналы для обновления View
+    display_updated = Signal(str)
+    error_occurred = Signal(str)
+    voice_processing_started = Signal()
+    voice_processing_finished = Signal()
+    
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.current_expression = ""
+        self.display_text = ""
+        self.voice_handler = None
+        self.command_parser = None
+        self.is_voice_active = False
+        self.voice_thread = None
+        self.voice_lock = threading.Lock()
+    
+    def set_voice_handler(self, handler):
+        """Установка обработчика голосового ввода"""
+        self.voice_handler = handler
+    
+    def set_command_parser(self, parser):
+        """Установка парсера голосовых команд"""
+        self.command_parser = parser
+    
+    def on_number_clicked(self, digit):
+        """Обработка нажатия цифровой кнопки"""
+        self.current_expression += str(digit)
+        self.update_display(self.current_expression)
+    
+    def on_operator_clicked(self, op):
+        """Обработка нажатия кнопки оператора"""
+        self.current_expression += op
+        self.update_display(self.current_expression)
+    
+    def on_equal_clicked(self):
+        """Обработка нажатия кнопки = (вычисляет текущее выражение)"""
+        if not self.current_expression:
+            return
+        
+        try:
+            result = self.model.evaluate_expression(self.current_expression)
+            self.display_text = str(result)
+            self.current_expression = str(result)
+            self.update_display(self.display_text)
+        except ZeroDivisionError as e:
+            self.error_occurred.emit(str(e))
+            self.current_expression = ""
+            self.update_display("")
+        except ValueError as e:
+            self.error_occurred.emit(str(e))
+            self.current_expression = ""
+            self.update_display("")
+        except Exception as e:
+            self.error_occurred.emit(f"Неизвестная ошибка: {str(e)}")
+            self.current_expression = ""
+            self.update_display("")
+    
+    def on_clear_clicked(self):
+        """Обработка нажатия кнопки C (очистка)"""
+        self.current_expression = ""
+        self.display_text = ""
+        self.update_display("")
+    
+    def set_expression_from_view(self, expression):
+        """
+        Устанавливает выражение из строки формул (для Excel-стиля)
+        
+        Args:
+            expression (str): Выражение из строки ввода
+        """
+        self.current_expression = expression
+        self.update_display(expression)
+    
+    def evaluate_from_formula_line(self, expression):
+        """
+        Вычисляет выражение из строки формул (Excel-стиль)
+        
+        Args:
+            expression (str): Выражение из строки ввода
+        """
+        if not expression:
+            return
+        
+        self.current_expression = expression
+        self.on_equal_clicked()
+    
+    def on_voice_input_triggered(self):
+        """Обработка активации голосового ввода (запуск/остановка)"""
+        if not self.voice_handler or not self.command_parser:
+            self.error_occurred.emit("Голосовой ввод не доступен")
+            return
+        
+        with self.voice_lock:
+            if self.is_voice_active:
+                # Останавливаем распознавание
+                self.stop_voice_recognition()
+            else:
+                # Запускаем распознавание
+                self.start_voice_recognition()
+    
+    def start_voice_recognition(self):
+        """Запуск распознавания голоса"""
+        if self.is_voice_active:
+            return
+        
+        self.is_voice_active = True
+        self.voice_processing_started.emit()
+        
+        def process_voice():
+            try:
+                # Захват и распознавание речи
+                text = self.voice_handler.recognize_speech()
+                
+                # Проверяем, не был ли процесс остановлен
+                if not self.is_voice_active:
+                    return
+                
+                if text and text != "Не распознано":
+                    # Парсинг распознанного текста
+                    parsed_expression = self.command_parser.parse_voice_text(text)
+                    if parsed_expression:
+                        # Добавляем распознанное выражение к текущему
+                        self.current_expression += parsed_expression
+                        self.update_display(self.current_expression)
+                    else:
+                        self.error_occurred.emit("Не удалось распознать команду")
+                else:
+                    self.error_occurred.emit(text if text else "Не распознано")
+            except Exception as e:
+                self.error_occurred.emit(f"Ошибка голосового ввода: {str(e)}")
+            finally:
+                with self.voice_lock:
+                    self.is_voice_active = False
+                self.voice_processing_finished.emit()
+        
+        self.voice_thread = threading.Thread(target=process_voice, daemon=True)
+        self.voice_thread.start()
+    
+    def stop_voice_recognition(self):
+        """Остановка распознавания голоса"""
+        if not self.is_voice_active:
+            return
+        
+        # Останавливаем обработчик
+        if self.voice_handler:
+            self.voice_handler.stop_listening()
+        
+        self.is_voice_active = False
+        self.voice_processing_finished.emit()
+    
+    def update_display(self, text):
+        """Обновление отображаемого текста"""
+        self.display_text = text
+        self.display_updated.emit(text)
+    
+    def add_to_expression(self, text):
+        """Добавление текста к текущему выражению"""
+        self.current_expression += text
+        self.update_display(self.current_expression)
+python
+Copy
+Download
+# файл: views/calculator_view.py
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
+                                QGridLayout, QPushButton, QLineEdit)
+from PySide6.QtCore import Qt, Slot
+
+class CalculatorView(QMainWindow):
+    """View для калькулятора с Excel-стилем"""
+    
+    def __init__(self, view_model):
+        super().__init__()
+        self.view_model = view_model
+        self.setup_ui()
+        self.bind_commands()
+        
+        # Подключаем сигналы ViewModel
+        self.view_model.display_updated.connect(self.update_display_slot)
+        self.view_model.error_occurred.connect(self.show_error)
+        self.view_model.voice_processing_started.connect(self.on_voice_started)
+        self.view_model.voice_processing_finished.connect(self.on_voice_finished)
+        
+        self.setWindowTitle("Калькулятор Excel-стиль с голосовым вводом")
+        self.setFixedSize(400, 500)
+    
+    def setup_ui(self):
+        """Настройка пользовательского интерфейса"""
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        main_layout = QVBoxLayout(central_widget)
+        
+        # Строка формул (как в Excel)
+        self.formula_line = QLineEdit()
+        self.formula_line.setPlaceholderText("Введите выражение или используйте голос...")
+        self.formula_line.setStyleSheet("""
+            QLineEdit {
+                font-size: 18px;
+                padding: 10px;
+                border: 2px solid #ccc;
+                border-radius: 5px;
+                min-height: 40px;
+            }
+        """)
+        main_layout.addWidget(self.formula_line)
+        
+        # Сетка кнопок 5x5
+        self.button_grid = QGridLayout()
+        main_layout.addLayout(self.button_grid)
+        
+        # Определяем кнопки согласно ТЗ (сетка 5x5)
+        buttons = [
+            ['1', '2', '3', '+', '('],
+            ['4', '5', '6', '-', ')'],
+            ['7', '8', '9', '*', 'Голос'],
+            ['0', '.', '/', '=', 'C']
+        ]
+        
+        # Создаем кнопки
+        self.buttons = {}
+        for row, row_buttons in enumerate(buttons):
+            for col, btn_text in enumerate(row_buttons):
+                button = QPushButton(btn_text)
+                button.setStyleSheet("""
+                    QPushButton {
+                        font-size: 16px;
+                        padding: 15px;
+                        margin: 2px;
+                        border: 1px solid #999;
+                        border-radius: 3px;
+                        background-color: #f0f0f0;
+                    }
+                    QPushButton:hover {
+                        background-color: #e0e0e0;
+                    }
+                    QPushButton:pressed {
+                        background-color: #d0d0d0;
+                    }
+                """)
+                self.button_grid.addWidget(button, row, col)
+                self.buttons[btn_text] = button
+        
+        self.formula_line.setFocus()
+    
+    def bind_commands(self):
+        """Привязка команд к кнопкам"""
+        # Цифры
+        for digit in '0123456789':
+            if digit in self.buttons:
+                self.buttons[digit].clicked.connect(
+                    lambda checked, d=digit: self.view_model.on_number_clicked(d)
+                )
+        
+        # Операторы
+        operators = {'+', '-', '*', '/', '(', ')'}
+        for op in operators:
+            if op in self.buttons:
+                self.buttons[op].clicked.connect(
+                    lambda checked, o=op: self.view_model.on_operator_clicked(o)
+                )
+        
+        # Кнопка равно
+        if '=' in self.buttons:
+            self.buttons['='].clicked.connect(self.on_equal_clicked)
+        
+        # Кнопка очистки
+        if 'C' in self.buttons:
+            self.buttons['C'].clicked.connect(self.view_model.on_clear_clicked)
+        
+        # Кнопка голосового ввода
+        if 'Голос' in self.buttons:
+            self.buttons['Голос'].clicked.connect(self.view_model.on_voice_input_triggered)
+        
+        # Кнопка десятичной точки
+        if '.' in self.buttons:
+            self.buttons['.'].clicked.connect(
+                lambda checked: self.view_model.on_operator_clicked('.')
+            )
+        
+        # Подключаем ввод через строку формул (Excel-стиль)
+        self.formula_line.returnPressed.connect(self.on_formula_entered)
+        self.formula_line.textChanged.connect(self.on_formula_text_changed)
+    
+    def on_equal_clicked(self):
+        """Обработка нажатия кнопки ="""
+        # В Excel-стиле при нажатии = вычисляется содержимое строки формул
+        expression = self.formula_line.text()
+        self.view_model.evaluate_from_formula_line(expression)
+    
+    def on_formula_entered(self):
+        """Обработка ввода формулы в строку (нажатие Enter)"""
+        expression = self.formula_line.text()
+        self.view_model.evaluate_from_formula_line(expression)
+    
+    def on_formula_text_changed(self, text):
+        """
+        Синхронизация строки формул с current_expression
+        При ручном вводе в строку обновляем выражение в ViewModel
+        """
+        self.view_model.set_expression_from_view(text)
+    
+    @Slot(str)
+    def update_display_slot(self, value):
+        """Обновление отображения"""
+        # Обновляем строку формул
+        self.formula_line.setText(value)
+    
+    @Slot(str)
+    def show_error(self, message):
+        """Отображение ошибки"""
+        self.formula_line.setText(f"Ошибка: {message}")
+        # Таймер для очистки сообщения об ошибке через 2 секунды
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(2000, lambda: self.formula_line.setText(""))
+    
+    @Slot()
+    def on_voice_started(self):
+        """Обработка начала голосового ввода"""
+        self.buttons['Голос'].setStyleSheet("""
+            QPushButton {
+                font-size: 16px;
+                padding: 15px;
+                margin: 2px;
+                border: 1px solid #999;
+                border-radius: 3px;
+                background-color: #ff9999;
+            }
+        """)
+        self.formula_line.setPlaceholderText("Слушаю... Говорите... (нажмите Голос для остановки)")
+    
+    @Slot()
+    def on_voice_finished(self):
+        """Обработка завершения голосового ввода"""
+        self.buttons['Голос'].setStyleSheet("""
+            QPushButton {
+                font-size: 16px;
+                padding: 15px;
+                margin: 2px;
+                border: 1px solid #999;
+                border-radius: 3px;
+                background-color: #f0f0f0;
+            }
+        """)
+        self.formula_line.setPlaceholderText("Введите выражение или используйте голос...")
+python
+Copy
+Download
+# файл: voice/voice_input_handler.py
+import pyaudio
+import json
+import threading
+import queue
+import time
+from vosk import Model, KaldiRecognizer
+
+class VoiceInputHandler:
+    """Обработчик голосового ввода с использованием Vosk"""
+    
+    def __init__(self, model_path):
+        """
+        Инициализация обработчика голосового ввода
+        
+        Args:
+            model_path (str): Путь к модели Vosk
+        """
+        self.model_path = model_path
+        self.model = None
+        self.recognizer = None
+        self.audio = None
+        self.stream = None
+        self.is_listening = False
+        self.should_stop = False
+        self.audio_queue = queue.Queue()
+        self.recognition_lock = threading.Lock()
+        self.current_recognition = None
+        
+        # Инициализация Vosk модели
+        try:
+            self.model = Model(model_path)
+            self.recognizer = KaldiRecognizer(self.model, 16000)
+            print("Vosk модель успешно загружена")
+        except Exception as e:
+            print(f"Ошибка загрузки модели Vosk: {e}")
+            raise
+    
+    def start_listening(self):
+        """Запуск потока захвата из микрофона"""
+        with self.recognition_lock:
+            if self.is_listening:
+                return
+            
+            try:
+                self.audio = pyaudio.PyAudio()
+                self.stream = self.audio.open(
+                    format=pyaudio.paInt16,
+                    channels=1,
+                    rate=16000,
+                    input=True,
+                    frames_per_buffer=4000,
+                    stream_callback=self._audio_callback
+                )
+                self.stream.start_stream()
+                self.is_listening = True
+                self.should_stop = False
+                print("Начало прослушивания...")
+            except Exception as e:
+                print(f"Ошибка при запуске аудиопотока: {e}")
+                self.is_listening = False
+                raise
+    
+    def stop_listening(self):
+        """Остановка захвата из микрофона"""
+        with self.recognition_lock:
+            if not self.is_listening:
+                return
+            
+            self.should_stop = True
+            
+            if self.stream:
+                self.stream.stop_stream()
+                self.stream.close()
+                self.stream = None
+            
+            if self.audio:
+                self.audio.terminate()
+                self.audio = None
+            
+            self.is_listening = False
+            print("Прослушивание остановлено")
+    
+    def _audio_callback(self, in_data, frame_count, time_info, status):
+        """Колбэк для получения аудиоданных от pyaudio"""
+        if not self.should_stop:
+            self.audio_queue.put(in_data)
+        return (None, pyaudio.paContinue)
+    
+    def recognize_speech(self) -> str:
+        """
+        Распознавание речи из микрофона с возможностью досрочной остановки
+        
+        Returns:
+            str: Распознанный текст или сообщение об ошибке
+        """
+        if not self.model:
+            return "Модель не загружена"
+        
+        with self.recognition_lock:
+            # Если уже идет распознавание, останавливаем его
+            if self.is_listening:
+                self.stop_listening()
+                return "Распознавание отменено"
+        
+        try:
+            self.start_listening()
+            
+            # Собираем аудиоданные
+            audio_data = b''
+            silent_chunks = 0
+            max_silent_chunks = 20  # около 2 секунд тишины
+            min_audio_chunks = 10    # минимум 1 секунда аудио
+            max_chunks = 200  # максимум 10 секунд записи (200 * 0.05 сек)
+            
+            print("Говорите... (скажите что-нибудь)")
+            
+            for i in range(max_chunks):
+                # Проверяем, не нужно ли остановиться
+                if self.should_stop:
+                    self.stop_listening()
+                    return "Распознавание отменено пользователем"
+                
+                try:
+                    chunk = self.audio_queue.get(timeout=0.05)
+                    audio_data += chunk
+                    
+                    # Проверяем уровень звука
+                    if len(chunk) > 0:
+                        import struct
+                        samples = struct.unpack('<' + 'h' * (len(chunk) // 2), chunk)
+                        max_amplitude = max(abs(s) for s in samples) if samples else 0
+                        
+                        if max_amplitude < 500:  # Порог тишины
+                            silent_chunks += 1
+                        else:
+                            silent_chunks = 0
+                    
+                    # Если достаточно тишины после речи, прекращаем запись
+                    if silent_chunks > max_silent_chunks and len(audio_data) > min_audio_chunks * 4000:
+                        break
+                        
+                except queue.Empty:
+                    # Если нет данных в очереди и уже есть аудио, возможно, речь закончилась
+                    if len(audio_data) > min_audio_chunks * 4000:
+                        break
+            
+            self.stop_listening()
+            
+            if len(audio_data) < 4000:  # Меньше 0.25 секунды
+                return "Не распознано"
+            
+            # Распознаем собранные аудиоданные
+            if self.recognizer.AcceptWaveform(audio_data):
+                result = json.loads(self.recognizer.Result())
+                text = result.get('text', '')
+                if text:
+                    print(f"Распознано: {text}")
+                    return text
+                else:
+                    return "Не распознано"
+            else:
+                # Проверяем частичный результат
+                partial = json.loads(self.recognizer.PartialResult())
+                partial_text = partial.get('partial', '')
+                if partial_text:
+                    print(f"Частичное распознавание: {partial_text}")
+                    return partial_text
+                return "Не распознано"
+                
+        except Exception as e:
+            print(f"Ошибка распознавания: {e}")
+            self.stop_listening()
+            return "Не распознано"
+python
+Copy
+Download
+# файл: voice/command_parser.py
+import re
+
+class CommandParser:
+    """Парсер голосовых команд для преобразования русской речи в математические выражения"""
+    
+    def __init__(self):
+        # Словари для преобразования чисел прописью до 100
+        self.units = {
+            'один': 1, 'одна': 1, 'одно': 1,
+            'два': 2, 'две': 2,
+            'три': 3,
+            'четыре': 4,
+            'пять': 5,
+            'шесть': 6,
+            'семь': 7,
+            'восемь': 8,
+            'девять': 9,
+            'десять': 10,
+            'одиннадцать': 11,
+            'двенадцать': 12,
+            'тринадцать': 13,
+            'четырнадцать': 14,
+            'пятнадцать': 15,
+            'шестнадцать': 16,
+            'семнадцать': 17,
+            'восемнадцать': 18,
+            'девятнадцать': 19
+        }
+        
+        self.tens = {
+            'двадцать': 20,
+            'тридцать': 30,
+            'сорок': 40,
+            'пятьдесят': 50,
+            'шестьдесят': 60,
+            'семьдесят': 70,
+            'восемьдесят': 80,
+            'девяносто': 90
+        }
+        
+        self.hundreds = {
+            'сто': 100
+        }
+        
+        # Операторы
+        self.operators = {
+            'плюс': '+',
+            'минус': '-',
+            'умножить': '*',
+            'умножьте': '*',
+            'умножь': '*',
+            'разделить': '/',
+            'поделить': '/',
+            'открыть': '(',
+            'открыть скобку': '(',
+            'закрыть': ')',
+            'закрыть скобку': ')',
+            'скобка': '(',
+            'точка': '.',
+            'запятая': '.'
+        }
+    
+    def parse_voice_text(self, text: str) -> str:
+        """
+        Преобразует текстовую команду на русском языке в математическое выражение
+        
+        Args:
+            text (str): Распознанный текст на русском языке
+            
+        Returns:
+            str: Математическое выражение
+        """
+        if not text:
+            return ""
+        
+        text = text.lower().strip()
+        
+        # Заменяем операторы
+        result = text
+        for word, symbol in self.operators.items():
+            # Заменяем только целые слова
+            result = re.sub(r'\b' + re.escape(word) + r'\b', symbol, result)
+        
+        # Обрабатываем числа прописью (поддержка до 100)
+        words = result.split()
+        parsed_words = []
+        i = 0
+        
+        while i < len(words):
+            word = words[i]
+            
+            # Проверяем составные числа (десятки + единицы) до 99
+            if i + 1 < len(words) and word in self.tens and words[i + 1] in self.units:
+                number = self.tens[word] + self.units[words[i + 1]]
+                parsed_words.append(str(number))
+                i += 2
+            # Проверяем числа от 1 до 19
+            elif word in self.units:
+                parsed_words.append(str(self.units[word]))
+                i += 1
+            # Проверяем десятки (20,30,40...90)
+            elif word in self.tens:
+                parsed_words.append(str(self.tens[word]))
+                i += 1
+            # Проверяем сотню (100)
+            elif word in self.hundreds:
+                parsed_words.append(str(self.hundreds[word]))
+                i += 1
+            else:
+                # Сохраняем операторы и другие символы
+                parsed_words.append(word)
+                i += 1
+        
+        result = ' '.join(parsed_words)
+        
+        # Удаляем лишние пробелы вокруг операторов
+        for op in ['+', '-', '*', '/', '(', ')']:
+            result = result.replace(f' {op} ', f'{op}')
+            result = result.replace(f'{op} ', f'{op}')
+            result = result.replace(f' {op}', f'{op}')
+        
+        # Обрабатываем особые случаи
+        result = re.sub(r'(\d+)\s+на\s+(\d+)', r'\1*\2', result)
+        result = re.sub(r'(\d+)\s+разделить\s+на\s+(\d+)', r'\1/\2', result)
+        result = re.sub(r'(\d+)\s+делить\s+на\s+(\d+)', r'\1/\2', result)
+        result = re.sub(r'(\d+)\s+умножить\s+на\s+(\d+)', r'\1*\2', result)
+        
+        # Обработка десятичных дробей
+        result = re.sub(r'(\d+)\s+точка\s+(\d+)', r'\1.\2', result)
+        result = re.sub(r'(\d+)\s+запятая\s+(\d+)', r'\1.\2', result)
+        
+        # Удаляем лишние пробелы
+        result = ' '.join(result.split())
+        
+        print(f"Распарсенное выражение: {result}")
+        return result
+=== СТАТУС ===
+ИСПРАВЛЕНО, ПРОВЕРЬТЕ

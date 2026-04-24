@@ -1,0 +1,1052 @@
+=== КОД ===
+```kotlin
+// файл: app/src/main/java/com/printer/cyberdial/AppModel.kt
+package com.printer.cyberdial
+
+import java.io.Serializable
+
+data class AppModel(
+    val name: String,
+    val iconRes: Int,
+    val packageName: String? = null,
+    val isAvailable: Boolean = true,
+    val isFolder: Boolean = false,
+    val appsInFolder: List<AppModel>? = null
+) : Serializable
+```
+
+```kotlin
+// файл: app/src/main/java/com/printer/cyberdial/AppsRepository.kt
+package com.printer.cyberdial
+
+import android.content.Context
+import android.content.pm.PackageManager
+
+class AppsRepository(private val context: Context) {
+    
+    fun getAppsList(): List<AppModel> {
+        val apps = mutableListOf<AppModel>()
+        
+        val socialApps = listOf(
+            AppModel("WhatsApp", R.drawable.ic_whatsapp, isAvailable = false),
+            AppModel("Telegram", R.drawable.ic_telegram, isAvailable = true, packageName = "org.telegram.messenger"),
+            AppModel("Instagram", R.drawable.ic_instagram, isAvailable = false),
+            AppModel("Facebook", R.drawable.ic_facebook, isAvailable = false),
+            AppModel("TikTok", R.drawable.ic_tiktok, isAvailable = false),
+            AppModel("VK", R.drawable.ic_vk, isAvailable = false)
+        )
+        
+        val socialFolder = AppModel(
+            name = "Соцсети",
+            iconRes = R.drawable.ic_folder_social,
+            isFolder = true,
+            appsInFolder = socialApps
+        )
+        
+        val googleApps = listOf(
+            AppModel("Gmail", R.drawable.ic_gmail, isAvailable = true),
+            AppModel("Drive", R.drawable.ic_drive, isAvailable = false),
+            AppModel("Maps", R.drawable.ic_maps, isAvailable = true),
+            AppModel("YouTube", R.drawable.ic_youtube, isAvailable = true),
+            AppModel("Photos", R.drawable.ic_photos, isAvailable = false)
+        )
+        
+        val googleFolder = AppModel(
+            name = "Google",
+            iconRes = R.drawable.ic_folder_google,
+            isFolder = true,
+            appsInFolder = googleApps
+        )
+        
+        val entertainmentApps = listOf(
+            AppModel("Netflix", R.drawable.ic_netflix, isAvailable = false),
+            AppModel("Spotify", R.drawable.ic_spotify, isAvailable = true),
+            AppModel("Music", R.drawable.ic_music, isAvailable = true)
+        )
+        
+        val entertainmentFolder = AppModel(
+            name = "Развлечения",
+            iconRes = R.drawable.ic_folder_entertainment,
+            isFolder = true,
+            appsInFolder = entertainmentApps
+        )
+        
+        apps.add(socialFolder)
+        apps.add(googleFolder)
+        apps.add(entertainmentFolder)
+        
+        val regularApps = listOf(
+            AppModel("Telegram", R.drawable.ic_telegram, isAvailable = true, packageName = "org.telegram.messenger"),
+            AppModel("Камера", R.drawable.ic_camera, isAvailable = true, packageName = "com.android.camera"),
+            AppModel("Телефон", R.drawable.ic_phone, isAvailable = true, packageName = "com.android.dialer"),
+            AppModel("Сообщения", R.drawable.ic_messages, isAvailable = true, packageName = "com.android.mms"),
+            AppModel("Браузер", R.drawable.ic_browser, isAvailable = true, packageName = "com.android.browser"),
+            AppModel("WhatsApp", R.drawable.ic_whatsapp, isAvailable = false),
+            AppModel("Instagram", R.drawable.ic_instagram, isAvailable = false),
+            AppModel("Facebook", R.drawable.ic_facebook, isAvailable = false),
+            AppModel("TikTok", R.drawable.ic_tiktok, isAvailable = false),
+            AppModel("VK", R.drawable.ic_vk, isAvailable = false),
+            AppModel("Gmail", R.drawable.ic_gmail, isAvailable = true),
+            AppModel("Drive", R.drawable.ic_drive, isAvailable = false),
+            AppModel("Maps", R.drawable.ic_maps, isAvailable = true),
+            AppModel("YouTube", R.drawable.ic_youtube, isAvailable = true),
+            AppModel("Photos", R.drawable.ic_photos, isAvailable = false),
+            AppModel("Netflix", R.drawable.ic_netflix, isAvailable = false),
+            AppModel("Spotify", R.drawable.ic_spotify, isAvailable = true),
+            AppModel("Music", R.drawable.ic_music, isAvailable = true),
+            AppModel("Gallery", R.drawable.ic_gallery, isAvailable = true),
+            AppModel("Calendar", R.drawable.ic_calendar, isAvailable = true),
+            AppModel("Clock", R.drawable.ic_clock, isAvailable = true),
+            AppModel("Calculator", R.drawable.ic_calculator, isAvailable = true),
+            AppModel("Files", R.drawable.ic_files, isAvailable = false),
+            AppModel("Settings", R.drawable.ic_settings, isAvailable = true, packageName = "com.android.settings")
+        )
+        
+        apps.addAll(regularApps)
+        
+        return apps
+    }
+    
+    fun isAppInstalled(packageName: String): Boolean {
+        return try {
+            context.packageManager.getPackageInfo(packageName, 0)
+            true
+        } catch (e: PackageManager.NameNotFoundException) {
+            false
+        }
+    }
+}
+```
+
+```kotlin
+// файл: app/src/main/java/com/printer/cyberdial/HomeScreenViewModel.kt
+package com.printer.cyberdial
+
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class HomeScreenViewModel(
+    private val repository: AppsRepository
+) : ViewModel() {
+    
+    private val _appsList = MutableLiveData<List<Any>>()
+    val appsList: LiveData<List<Any>> = _appsList
+    
+    private val _widgetsData = MutableLiveData<WidgetsData>()
+    val widgetsData: LiveData<WidgetsData> = _widgetsData
+    
+    init {
+        loadData()
+    }
+    
+    private fun loadData() {
+        viewModelScope.launch {
+            val apps = withContext(Dispatchers.IO) {
+                repository.getAppsList()
+            }
+            
+            val widgets = WidgetsData(
+                weatherData = "Солнечно 23°",
+                musicData = "Трек не выбран",
+                calendarData = "Событий нет",
+                mamulyaTimer = "03:15"
+            )
+            
+            val combinedList = mutableListOf<Any>()
+            combinedList.add(widgets)
+            combinedList.addAll(apps)
+            
+            _widgetsData.postValue(widgets)
+            _appsList.postValue(combinedList)
+        }
+    }
+    
+    fun updateMamulyaTimer(time: String) {
+        val currentWidgets = _widgetsData.value ?: return
+        val updatedWidgets = currentWidgets.copy(mamulyaTimer = time)
+        _widgetsData.value = updatedWidgets
+        
+        val currentList = _appsList.value?.toMutableList() ?: return
+        if (currentList.isNotEmpty() && currentList[0] is WidgetsData) {
+            currentList[0] = updatedWidgets
+            _appsList.value = currentList
+        }
+    }
+}
+```
+
+```kotlin
+// файл: app/src/main/java/com/printer/cyberdial/MainScreenAdapter.kt
+package com.printer.cyberdial
+
+import android.view.LayoutInflater
+import android.view.ViewGroup
+import androidx.recyclerview.widget.RecyclerView
+import com.printer.cyberdial.databinding.ItemAppIconBinding
+import com.printer.cyberdial.databinding.WidgetsHeaderBinding
+
+class MainScreenAdapter(
+    private val onAppClick: (AppModel, Int) -> Unit,
+    private val onWidgetClick: (Int) -> Unit
+) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+    
+    companion object {
+        const val TYPE_WIDGETS = 0
+        const val TYPE_APP = 1
+    }
+    
+    private var items: List<Any> = emptyList()
+    
+    fun submitList(list: List<Any>) {
+        items = list
+        notifyDataSetChanged()
+    }
+    
+    override fun getItemViewType(position: Int): Int {
+        return if (position == 0 && items.isNotEmpty() && items[0] is WidgetsData) {
+            TYPE_WIDGETS
+        } else {
+            TYPE_APP
+        }
+    }
+    
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+        return if (viewType == TYPE_WIDGETS) {
+            val binding = WidgetsHeaderBinding.inflate(LayoutInflater.from(parent.context), parent, false)
+            WidgetsViewHolder(binding, onWidgetClick)
+        } else {
+            val binding = ItemAppIconBinding.inflate(LayoutInflater.from(parent.context), parent, false)
+            AppViewHolder(binding, onAppClick)
+        }
+    }
+    
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+        when (holder) {
+            is WidgetsViewHolder -> {
+                val widgets = items[position] as WidgetsData
+                holder.bind(widgets)
+            }
+            is AppViewHolder -> {
+                val app = items[position] as AppModel
+                val adapterPosition = if (getItemViewType(position) == TYPE_WIDGETS) position - 1 else position
+                holder.bind(app, adapterPosition)
+            }
+        }
+    }
+    
+    override fun getItemCount(): Int = items.size
+}
+
+class AppViewHolder(
+    private val binding: ItemAppIconBinding,
+    private val onAppClick: (AppModel, Int) -> Unit
+) : RecyclerView.ViewHolder(binding.root) {
+    
+    fun bind(app: AppModel, position: Int) {
+        binding.appIcon.setImageResource(app.iconRes)
+        binding.appName.text = app.name
+        
+        if (!app.isAvailable) {
+            binding.appIcon.alpha = 0.5f
+            binding.ivLock.visibility = android.view.View.VISIBLE
+        } else {
+            binding.appIcon.alpha = 1.0f
+            binding.ivLock.visibility = android.view.View.GONE
+        }
+        
+        if (app.isFolder) {
+            binding.appIcon.alpha = 1.0f
+            binding.ivLock.visibility = android.view.View.GONE
+        }
+        
+        binding.root.setOnClickListener {
+            animateClick()
+            onAppClick(app, position)
+        }
+    }
+    
+    private fun animateClick() {
+        binding.root.animate()
+            .scaleX(0.95f)
+            .scaleY(0.95f)
+            .setDuration(100)
+            .withEndAction {
+                binding.root.animate()
+                    .scaleX(1.0f)
+                    .scaleY(1.0f)
+                    .setDuration(100)
+                    .start()
+            }
+            .start()
+    }
+}
+```
+
+```kotlin
+// файл: app/src/main/java/com/printer/cyberdial/WidgetsViewHolder.kt
+package com.printer.cyberdial
+
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import androidx.recyclerview.widget.RecyclerView
+import com.printer.cyberdial.databinding.WidgetsHeaderBinding
+
+class WidgetsViewHolder(
+    private val binding: WidgetsHeaderBinding,
+    private val onWidgetClick: (Int) -> Unit
+) : RecyclerView.ViewHolder(binding.root) {
+    
+    private var timerHandler: Handler? = null
+    private var timerRunnable: Runnable? = null
+    private var remainingSeconds = 60
+    
+    fun bind(widgetsData: WidgetsData) {
+        binding.tvWeather.text = widgetsData.weatherData
+        binding.tvMusic.text = widgetsData.musicData
+        binding.tvCalendar.text = widgetsData.calendarData
+        binding.tvMamulya.text = widgetsData.mamulyaTimer
+        
+        binding.cardWeather.setOnClickListener { onWidgetClick(0) }
+        binding.cardMusic.setOnClickListener { onWidgetClick(1) }
+        binding.cardCalendar.setOnClickListener { onWidgetClick(2) }
+        binding.cardMamulya.setOnClickListener { onWidgetClick(3) }
+        
+        startMamulyaTimer()
+    }
+    
+    private fun startMamulyaTimer() {
+        stopMamulyaTimer()
+        
+        timerHandler = Handler(Looper.getMainLooper())
+        timerRunnable = object : Runnable {
+            override fun run() {
+                if (remainingSeconds > 0) {
+                    remainingSeconds--
+                    val minutes = remainingSeconds / 60
+                    val seconds = remainingSeconds % 60
+                    val timeString = String.format("%02d:%02d", minutes, seconds)
+                    binding.tvMamulya.text = "Мамуля скоро напишет... $timeString"
+                    timerHandler?.postDelayed(this, 1000)
+                } else {
+                    binding.tvMamulya.text = "Мамуля скоро напишет... 00:00"
+                }
+            }
+        }
+        timerHandler?.postDelayed(timerRunnable!!, 1000)
+    }
+    
+    private fun stopMamulyaTimer() {
+        timerRunnable?.let { timerHandler?.removeCallbacks(it) }
+        timerHandler = null
+        timerRunnable = null
+    }
+    
+    fun onDestroy() {
+        stopMamulyaTimer()
+    }
+}
+```
+
+```kotlin
+// файл: app/src/main/java/com/printer/cyberdial/FolderDialogFragment.kt
+package com.printer.cyberdial
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
+import android.widget.TextView
+import android.widget.Toast
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.bottomsheet.BottomSheetDialogFragment
+import com.printer.cyberdial.databinding.DialogFolderBinding
+import com.printer.cyberdial.databinding.ItemAppIconBinding
+
+class FolderDialogFragment : BottomSheetDialogFragment() {
+    
+    private var _binding: DialogFolderBinding? = null
+    private val binding get() = _binding!!
+    
+    private lateinit var folder: AppModel
+    
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        folder = arguments?.getSerializable("folder") as AppModel
+    }
+    
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = DialogFolderBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+    
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        
+        binding.tvFolderTitle.text = folder.name
+        
+        val recyclerView = binding.recyclerViewFolder
+        recyclerView.layoutManager = GridLayoutManager(requireContext(), 3)
+        
+        val folderApps = folder.appsInFolder ?: emptyList()
+        val adapter = FolderAdapter(folderApps) { app ->
+            handleAppClick(app)
+        }
+        
+        recyclerView.adapter = adapter
+    }
+    
+    private fun handleAppClick(app: AppModel) {
+        if (!app.isAvailable) {
+            Toast.makeText(requireContext(), "Приложение заблокировано", Toast.LENGTH_SHORT).show()
+        } else if (app.packageName != null) {
+            try {
+                val intent = requireContext().packageManager.getLaunchIntentForPackage(app.packageName)
+                if (intent != null) {
+                    startActivity(intent)
+                    dismiss()
+                } else {
+                    Toast.makeText(requireContext(), "Приложение не установлено", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(requireContext(), "Ошибка открытия приложения", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(requireContext(), "Открытие ${app.name}", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+    
+    companion object {
+        fun newInstance(folder: AppModel): FolderDialogFragment {
+            val fragment = FolderDialogFragment()
+            val args = Bundle()
+            args.putSerializable("folder", folder)
+            fragment.arguments = args
+            return fragment
+        }
+    }
+}
+
+class FolderAdapter(
+    private val apps: List<AppModel>,
+    private val onItemClick: (AppModel) -> Unit
+) : RecyclerView.Adapter<FolderAdapter.FolderViewHolder>() {
+    
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): FolderViewHolder {
+        val binding = ItemAppIconBinding.inflate(LayoutInflater.from(parent.context), parent, false)
+        return FolderViewHolder(binding, onItemClick)
+    }
+    
+    override fun onBindViewHolder(holder: FolderViewHolder, position: Int) {
+        holder.bind(apps[position])
+    }
+    
+    override fun getItemCount(): Int = apps.size
+    
+    class FolderViewHolder(
+        private val binding: ItemAppIconBinding,
+        private val onItemClick: (AppModel) -> Unit
+    ) : RecyclerView.ViewHolder(binding.root) {
+        
+        fun bind(app: AppModel) {
+            binding.appIcon.setImageResource(app.iconRes)
+            binding.appName.text = app.name
+            
+            if (!app.isAvailable) {
+                binding.appIcon.alpha = 0.5f
+                binding.ivLock.visibility = View.VISIBLE
+            } else {
+                binding.appIcon.alpha = 1.0f
+                binding.ivLock.visibility = View.GONE
+            }
+            
+            binding.root.setOnClickListener {
+                animateClick()
+                onItemClick(app)
+            }
+        }
+        
+        private fun animateClick() {
+            binding.root.animate()
+                .scaleX(0.95f)
+                .scaleY(0.95f)
+                .setDuration(100)
+                .withEndAction {
+                    binding.root.animate()
+                        .scaleX(1.0f)
+                        .scaleY(1.0f)
+                        .setDuration(100)
+                        .start()
+                }
+                .start()
+        }
+    }
+}
+```
+
+```kotlin
+// файл: app/src/main/java/com/printer/cyberdial/HomeScreenFragment.kt
+package com.printer.cyberdial
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Toast
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.ViewModelProvider
+import androidx.recyclerview.widget.GridLayoutManager
+import com.printer.cyberdial.databinding.FragmentHomeScreenBinding
+
+class HomeScreenFragment : Fragment() {
+    
+    private var _binding: FragmentHomeScreenBinding? = null
+    private val binding get() = _binding!!
+    
+    private lateinit var viewModel: HomeScreenViewModel
+    private lateinit var adapter: MainScreenAdapter
+    private lateinit var widgetsViewHolder: WidgetsViewHolder
+    
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = FragmentHomeScreenBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+    
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        
+        val repository = AppsRepository(requireContext())
+        viewModel = ViewModelProvider(this, object : ViewModelProvider.Factory {
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                return HomeScreenViewModel(repository) as T
+            }
+        }).get(HomeScreenViewModel::class.java)
+        
+        setupRecyclerView()
+        setupDock()
+        observeData()
+    }
+    
+    private fun setupRecyclerView() {
+        adapter = MainScreenAdapter(
+            onAppClick = { app, position ->
+                handleAppClick(app)
+            },
+            onWidgetClick = { widgetType ->
+                when (widgetType) {
+                    0 -> Toast.makeText(requireContext(), "Прогноз погоды", Toast.LENGTH_SHORT).show()
+                    1 -> Toast.makeText(requireContext(), "Музыкальный плеер", Toast.LENGTH_SHORT).show()
+                    2 -> Toast.makeText(requireContext(), "Календарь", Toast.LENGTH_SHORT).show()
+                    3 -> Toast.makeText(requireContext(), "Сообщение маме", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+        
+        val layoutManager = GridLayoutManager(requireContext(), 5)
+        layoutManager.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
+            override fun getSpanSize(position: Int): Int {
+                return if (position == 0 && adapter.getItemViewType(position) == MainScreenAdapter.TYPE_WIDGETS) {
+                    5
+                } else {
+                    1
+                }
+            }
+        }
+        
+        binding.recyclerViewApps.layoutManager = layoutManager
+        binding.recyclerViewApps.adapter = adapter
+    }
+    
+    private fun setupDock() {
+        binding.ivPhone.setOnClickListener {
+            Toast.makeText(requireContext(), "Телефон", Toast.LENGTH_SHORT).show()
+        }
+        binding.ivMessages.setOnClickListener {
+            Toast.makeText(requireContext(), "Сообщения", Toast.LENGTH_SHORT).show()
+        }
+        binding.ivBrowser.setOnClickListener {
+            Toast.makeText(requireContext(), "Браузер", Toast.LENGTH_SHORT).show()
+        }
+        binding.ivCamera.setOnClickListener {
+            Toast.makeText(requireContext(), "Камера", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    private fun observeData() {
+        viewModel.appsList.observe(viewLifecycleOwner) { list ->
+            adapter.submitList(list)
+        }
+    }
+    
+    private fun handleAppClick(app: AppModel) {
+        if (app.isFolder) {
+            val dialog = FolderDialogFragment.newInstance(app)
+            dialog.show(parentFragmentManager, "folder_dialog")
+        } else if (!app.isAvailable) {
+            Toast.makeText(requireContext(), "Приложение заблокировано", Toast.LENGTH_SHORT).show()
+        } else if (app.packageName != null) {
+            try {
+                val intent = requireContext().packageManager.getLaunchIntentForPackage(app.packageName)
+                if (intent != null) {
+                    startActivity(intent)
+                } else {
+                    Toast.makeText(requireContext(), "Приложение не установлено", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(requireContext(), "Ошибка открытия приложения", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(requireContext(), "Открытие ${app.name}", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+}
+```
+
+```kotlin
+// файл: app/src/main/java/com/printer/cyberdial/MainActivity.kt
+package com.printer.cyberdial
+
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import androidx.fragment.app.commit
+import com.printer.cyberdial.databinding.ActivityMainBinding
+
+class MainActivity : AppCompatActivity() {
+    
+    private lateinit var binding: ActivityMainBinding
+    
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+        
+        if (savedInstanceState == null) {
+            supportFragmentManager.commit {
+                add(R.id.fragment_container, HomeScreenFragment())
+            }
+        }
+    }
+}
+```
+
+```xml
+// файл: app/src/main/res/layout/activity_main.xml
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:context=".MainActivity">
+
+    <LinearLayout
+        android:id="@+id/statusBar"
+        android:layout_width="0dp"
+        android:layout_height="24dp"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:gravity="center_vertical"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:id="@+id/tvTime"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="12:00"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:layout_marginEnd="8dp"
+                android:src="@drawable/ic_signal" />
+
+            <TextView
+                android:id="@+id/tvBattery"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="100%"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:layout_marginStart="4dp"
+                android:src="@drawable/ic_battery" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <androidx.fragment.app.FragmentContainerView
+        android:id="@+id/fragment_container"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/statusBar" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+```
+
+```xml
+// файл: app/src/main/res/layout/fragment_home_screen.xml
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF121212">
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerViewApps"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:clipToPadding="false"
+        android:padding="8dp"
+        app:layout_constraintBottom_toTopOf="@+id/bottomDock"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <LinearLayout
+        android:id="@+id/bottomDock"
+        android:layout_width="match_parent"
+        android:layout_height="72dp"
+        android:background="#FF1E1E1E"
+        android:gravity="center"
+        android:orientation="horizontal"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <ImageView
+            android:id="@+id/ivPhone"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:padding="16dp"
+            android:src="@drawable/ic_phone" />
+
+        <ImageView
+            android:id="@+id/ivMessages"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:padding="16dp"
+            android:src="@drawable/ic_messages" />
+
+        <ImageView
+            android:id="@+id/ivBrowser"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:padding="16dp"
+            android:src="@drawable/ic_browser" />
+
+        <ImageView
+            android:id="@+id/ivCamera"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:padding="16dp"
+            android:src="@drawable/ic_camera" />
+
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+```
+
+```xml
+// файл: app/src/main/res/layout/item_app_icon.xml
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:foreground="?attr/selectableItemBackgroundBorderless"
+    android:padding="8dp">
+
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_horizontal">
+
+        <FrameLayout
+            android:layout_width="60dp"
+            android:layout_height="60dp"
+            android:layout_centerHorizontal="true">
+
+            <ImageView
+                android:id="@+id/appIcon"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="centerInside" />
+
+            <ImageView
+                android:id="@+id/ivLock"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:layout_gravity="top|end"
+                android:src="@drawable/ic_lock"
+                android:visibility="gone" />
+
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/appName"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/appIcon"
+            android:layout_marginTop="4dp"
+            android:ellipsize="end"
+            android:gravity="center"
+            android:maxLines="1"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp" />
+
+    </RelativeLayout>
+
+</FrameLayout>
+```
+
+```xml
+// файл: app/src/main/res/layout/widgets_header.xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:padding="8dp">
+
+    <androidx.cardview.widget.CardView
+        android:id="@+id/cardWeather"
+        android:layout_width="0dp"
+        android:layout_height="100dp"
+        android:layout_margin="4dp"
+        android:layout_weight="1"
+        app:cardBackgroundColor="#FF2A2A2A"
+        app:cardCornerRadius="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🌤️"
+                android:textSize="24sp" />
+
+            <TextView
+                android:id="@+id/tvWeather"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Солнечно 23°"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+    </androidx.cardview.widget.CardView>
+
+    <androidx.cardview.widget.CardView
+        android:id="@+id/cardMusic"
+        android:layout_width="0dp"
+        android:layout_height="100dp"
+        android:layout_margin="4dp"
+        android:layout_weight="1"
+        app:cardBackgroundColor="#FF2A2A2A"
+        app:cardCornerRadius="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🎵"
+                android:textSize="24sp" />
+
+            <TextView
+                android:id="@+id/tvMusic"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Трек не выбран"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+    </androidx.cardview.widget.CardView>
+
+    <androidx.cardview.widget.CardView
+        android:id="@+id/cardCalendar"
+        android:layout_width="0dp"
+        android:layout_height="100dp"
+        android:layout_margin="4dp"
+        android:layout_weight="1"
+        app:cardBackgroundColor="#FF2A2A2A"
+        app:cardCornerRadius="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="📅"
+                android:textSize="24sp" />
+
+            <TextView
+                android:id="@+id/tvCalendar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Событий нет"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+    </androidx.cardview.widget.CardView>
+
+    <androidx.cardview.widget.CardView
+        android:id="@+id/cardMamulya"
+        android:layout_width="0dp"
+        android:layout_height="100dp"
+        android:layout_margin="4dp"
+        android:layout_weight="1"
+        app:cardBackgroundColor="#FF2A2A2A"
+        app:cardCornerRadius="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="💬"
+                android:textSize="24sp" />
+
+            <TextView
+                android:id="@+id/tvMamulya"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Мамуля скоро напишет..."
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+    </androidx.cardview.widget.CardView>
+
+</LinearLayout>
+```
+
+```xml
+// файл: app/src/main/res/layout/dialog_folder.xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/tvFolderTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textColor="#FFFFFF"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="16dp" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerViewFolder"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="8dp" />
+
+</LinearLayout>
+```
+
+```xml
+// файл: app/src/main/res/drawable/ic_lock.xml
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M18,8h-1V6c0,-2.76 -2.24,-5 -5,-5S7,3.24 7,6v2H6c-1.1,0 -2,0.9 -2,2v10c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2V10c0,-1.1 -0.9,-2 -2,-2zm-6,9c-1.1,0 -2,-0.9 -2,-2s0.9,-2 2,-2 2,0.9 2,2 -0.9,2 -2,2zm3.1,-9H8.9V6c0,-1.71 1.39,-3.1 3.1,-3.1 1.71,0 3.1,1.39 3.1,3.1v2z"/>
+</vector>
+```
+
+```kotlin
+// файл: app/build.gradle.kts (фрагмент зависимостей)
+dependencies {
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("com.google.android.material:material:1.11.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
+    implementation("androidx.cardview:cardview:1.0.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.7.0")
+    implementation("androidx.fragment:fragment-ktx:1.6.2")
+    
+    // Удалить строку с viewpager2 если есть:
+    // implementation("androidx.viewpager2:viewpager2:1.0.0")
+}
+```
+
+=== СТАТУС ===
+ИСПРАВЛЕНО, ПРОВЕРЬТЕ
