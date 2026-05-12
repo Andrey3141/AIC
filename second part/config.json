@@ -1,0 +1,68 @@
+{
+    "lm_studio_url": "http://localhost:1234/v1/chat/completions",
+    "model": "qwen/qwen3-coder-30b",
+    "temperature": 0.3,
+    "max_tokens": 32768,
+    "format_params": {
+        "language": "Python",
+        "platform": "Desktop",
+        "ide": "Sublime Text"
+    },
+    "employees": [
+        {
+            "name": "Распределитель",
+            "role": "DISTRIBUTOR",
+            "token": "DISTRIBUTOR",
+            "icon": "🛰️",
+            "prompt": "Distributor.yaml"
+        },
+        {
+            "name": "Начальник",
+            "role": "BOSS",
+            "token": "BOSS",
+            "icon": "👨‍💼",
+            "prompt": "Boss.yaml"
+        },
+        {
+            "name": "Аналитик",
+            "role": "ANALYST",
+            "token": "ANALYST",
+            "icon": "📑",
+            "prompt": "Analyst.yaml"
+        },
+        {
+            "name": "Главный разработчик",
+            "role": "CHIEF DEVELOPER",
+            "token": "CHIEF_DEVELOPER",
+            "icon": "🔝👨‍💻",
+            "prompt": "Chief_developer.yaml"
+        },
+        {
+            "name": "Главный тестировщик",
+            "role": "CHIEF TESTER",
+            "token": "CHIEF_TESTER",
+            "icon": "🔝🐞",
+            "prompt": "Chief_tester.yaml"
+        },
+        {
+            "name": "Рядовой разработчик",
+            "role": "ORDINARY DEVELOPER",
+            "token": "ORDINARY_DEVELOPER",
+            "icon": "👨‍💻",
+            "prompt": "Ordinary_developer.yaml"
+        },
+        {
+            "name": "Рядовой тестировщик",
+            "role": "ORDINARY TESTER",
+            "token": "ORDINARY_TESTER",
+            "icon": "🐞",
+            "prompt": "Ordinary_tester.yaml"
+        },
+        {
+            "name": "Пользователь",
+            "role": "USER",
+            "token": "USER",
+            "icon": "👨‍💼"
+        }
+    ]
+}

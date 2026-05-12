@@ -1,0 +1,861 @@
+Я внимательно изучил задание и предоставленные файлы проекта. Приступаю к выполнению.
+=== КОД ===
+python
+Copy
+Download
+# файл: aic/aic_config.json
+{
+    "min_wait_time": 150,
+    "max_wait_time": 151,
+    "project_folder": "/home/lenovo/working/lab 5 (my)/employees",
+    "continue_button_selector": "button.ds-atom-button.ds-basic-button.ds-basic-button--outlined"
+}
+python
+Copy
+Download
+# файл: aic/core/timer.py
+import time
+import threading
+from typing import Callable, Optional
+
+class Timer:
+    """Таймер с обратным отсчётом"""
+    
+    def __init__(self, log_callback: Callable[[str, str], None]):
+        self.log_callback = log_callback
+        self.connection_checker: Optional[Callable[[], bool]] = None
+        self._current_timer: Optional[threading.Timer] = None
+        self._current_interval: int = 0
+    
+    def set_connection_checker(self, checker: Callable[[], bool]) -> None:
+        self.connection_checker = checker
+    
+    def reset_timer(self) -> None:
+        """Перезапускает таймер ожидания (сбрасывает текущий отсчёт)"""
+        # Сохранить текущий интервал, отменить текущий таймер, запустить новый
+        if self._current_timer is not None:
+            self._current_timer.cancel()
+            self._current_timer = None
+        
+        if self._current_interval > 0:
+            self.log_callback("Таймер ожидания сброшен и перезапущен", "info")
+            # Запускаем новый таймер с сохранённым интервалом
+            self._start_countdown(self._current_interval)
+    
+    def _start_countdown(self, seconds: int) -> None:
+        """Запускает обратный отсчёт с заданным интервалом"""
+        if self._current_timer is not None:
+            self._current_timer.cancel()
+        
+        self._current_interval = seconds
+        self._current_timer = threading.Timer(seconds, self._on_timeout)
+        self._current_timer.daemon = True
+        self._current_timer.start()
+    
+    def _on_timeout(self) -> None:
+        """Обработчик истечения таймера"""
+        self.log_callback("Время ожидания истекло", "warning")
+        self._current_timer = None
+    
+    def wait_with_countdown(self, seconds: int) -> bool:
+        """Ожидание с обратным отсчётом - логи только каждые 30 секунд"""
+        self._current_interval = seconds
+        remaining = seconds
+        
+        while remaining > 0:
+            # Проверка соединения каждые 30 секунд
+            if self.connection_checker and remaining % 30 == 0:
+                if not self.connection_checker():
+                    self.log_callback("Соединение с браузером потеряно", "error")
+                    return False
+            
+            # Логируем только на 0, 30, 60 секунд и каждые 30 секунд
+            if remaining == 0 or remaining % 30 == 0 or remaining <= 10:
+                mins = remaining // 60
+                secs = remaining % 60
+                self.log_callback(f"Осталось {mins}мин{secs:02d}с...", "info")
+            
+            time.sleep(1)
+            remaining -= 1
+        
+        self._current_timer = None
+        return True
+    
+    def wait(self, seconds: int) -> None:
+        """Простое ожидание без логов"""
+        time.sleep(seconds)
+python
+Copy
+Download
+# файл: aic/core/message_handler.py
+import time
+import re
+import json
+import os
+from dataclasses import dataclass
+from typing import Optional, Callable, Tuple
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import pyperclip
+
+@dataclass
+class MessageSnapshot:
+    message_count: int
+    last_user_message_id: Optional[str] = None
+    last_user_message_text: Optional[str] = None
+    last_assistant_message_id: Optional[str] = None
+    last_assistant_message_text: Optional[str] = None
+
+class MessageHandler:
+    
+    # Токены статусов для парсинга
+    STATUS_TOKENS = {
+        "WAITING_USER": "=== СТАТУС ===\nЖДУ ОТВЕТА ПОЛЬЗОВАТЕЛЯ",
+        "SENT_TO_USER": "=== СТАТУС ===\nОТПРАВЛЕНО ПОЛЬЗОВАТЕЛЮ",
+        "NEEDS_REVISION": "=== СТАТУС ===\nТРЕБУЕТ ДОРАБОТКИ",
+        "WAITING_ANALYST": "=== СТАТУС ===\nЖДУ УТОЧНЁННОЕ ТЗ",
+        "WAITING_CHIEF": "=== СТАТУС ===\nЖДУ ОТЧЁТ И ДОКУМЕНТАЦИЮ",
+        "NEEDS_FULL_CYCLE": "=== СТАТУС ===\nТРЕБУЕТ ПОВТОРНОГО ЦИКЛА"
+    }
+    
+    # Мусорные фразы интерфейса DeepSeek, которые нужно фильтровать
+    GARBAGE_PHRASES = [
+        "Start chatting with",
+        "DeepThink",
+        "Search",
+        "Instant",
+        "Expert",
+        "Chat with",
+        "New chat",
+        "Send message",
+    ]
+    
+    ASSISTANT_SELECTORS = [
+        "[data-message-role='assistant']",
+        ".ds-message[data-role='assistant']"
+    ]
+    
+    ANY_MESSAGE_SELECTORS = [
+        ".ds-message",
+        "[data-message-role]",
+        "[data-role]",
+        ".chat-message",
+        ".message-content",
+        ".ds-markdown",
+        ".markdown",
+        ".prose",
+        "div[class*='message']"
+    ]
+    
+    def __init__(self, driver, log_callback: Callable[[str, str], None]):
+        self.driver = driver
+        self.log_callback = log_callback
+        self.is_connected = True
+        # Храним последнее отправленное сообщение для фильтрации
+        self._last_sent_message = None
+        self.debug = True
+        self._last_text = None
+        # Загружаем селектор кнопки из конфига
+        self._continue_button_selector = self._load_continue_button_selector()
+    
+    def _load_continue_button_selector(self) -> str:
+        """Загружает селектор кнопки Continue из конфига"""
+        default_selector = "button.ds-atom-button.ds-basic-button.ds-basic-button--outlined"
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), '..', 'aic_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    selector = config.get('continue_button_selector', default_selector)
+                    self.log_callback(f"Загружен селектор кнопки Continue: {selector}", "info")
+                    return selector
+        except Exception as e:
+            self.log_callback(f"Ошибка загрузки селектора из конфига: {str(e)}", "warning")
+        self.log_callback(f"Используется стандартный селектор: {default_selector}", "info")
+        return default_selector
+    
+    def _check_and_click_continue(self, driver) -> bool:
+        """
+        Поиск кнопки по CSS-селектору
+        Если найдена и видима/кликабельна → нажать, вернуть True
+        Иначе → вернуть False
+        """
+        if not driver or not self.is_connected:
+            return False
+        
+        try:
+            # Используем WebDriverWait с коротким таймаутом 0.5 сек
+            wait = WebDriverWait(driver, 0.5)
+            button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, self._continue_button_selector)))
+            
+            if button and button.is_displayed() and button.is_enabled():
+                button.click()
+                self.log_callback(f"Нажата кнопка Continue (селектор: {self._continue_button_selector})", "success")
+                return True
+        except TimeoutException:
+            # Кнопка не найдена в течение таймаута - это нормально
+            pass
+        except NoSuchElementException:
+            pass
+        except Exception as e:
+            self.log_callback(f"Ошибка при поиске кнопки Continue: {str(e)}", "warning")
+        
+        return False
+    
+    def _debug(self, msg: str):
+        if self.debug:
+            print(f"[DEBUG] {msg}")
+    
+    def get_file_stats(self, message: str) -> str:
+        if not message:
+            return "0 строк, 0 символов"
+        lines = message.split('\n')
+        return f"{len(lines)} строк, {len(message)} символов"
+    
+    def parse_boss_status_token(self, message: str) -> Optional[str]:
+        for token_key, token_value in self.STATUS_TOKENS.items():
+            if token_value in message:
+                self.log_callback(f"Найден токен начальника: {token_key}", "info")
+                return token_key
+        self.log_callback("Токен начальника не найден в ответе", "warning")
+        return None
+    
+    def remove_status_token(self, message: str) -> str:
+        result = message
+        for token_value in self.STATUS_TOKENS.values():
+            result = result.replace(token_value, "")
+        return result.strip()
+    
+    def get_last_assistant_message_id(self) -> Optional[str]:
+        if not self.driver or not self.is_connected:
+            return None
+
+        try:
+            elements = self.driver.find_elements(By.CSS_SELECTOR, "[data-message-role='assistant']")
+
+            if not elements:
+                return None
+
+            last_elem = elements[-1]
+
+            msg_id = last_elem.get_attribute('data-message-id') or last_elem.get_attribute('id')
+
+            return msg_id if msg_id else str(id(last_elem))
+
+        except Exception as e:
+            self.log_callback(f"Ошибка получения ID ассистента: {str(e)}", "error")
+            return None
+    
+    def _truncate_text(self, text: str, max_words: int = 10) -> str:
+        """Обрезает текст до указанного количества слов для лога"""
+        if not text:
+            return ""
+        words = text.split()
+        if len(words) <= max_words:
+            return text
+        truncated = ' '.join(words[:max_words])
+        return f"{truncated} [обрезано]"
+    
+    def _is_garbage_response(self, text: str) -> bool:
+        """
+        Проверяет, является ли ответ мусором из интерфейса DeepSeek.
+        Возвращает True, если ответ состоит в основном из мусорных фраз.
+        """
+        if not text:
+            return True
+        
+        words = text.split()
+        if len(words) <= 5:
+            garbage_count = 0
+            for word in words:
+                for garbage in self.GARBAGE_PHRASES:
+                    if garbage.lower() in word.lower():
+                        garbage_count += 1
+                        break
+            if garbage_count >= len(words) * 0.5:
+                return True
+        
+        cleaned = text
+        for garbage in self.GARBAGE_PHRASES:
+            cleaned = cleaned.replace(garbage, "")
+        cleaned = cleaned.strip()
+        
+        if len(cleaned) < 10:
+            return True
+        
+        return False
+    
+    def _is_own_message(self, text: str) -> bool:
+        if not self._last_sent_message or not text:
+            return False
+
+        sent = self._last_sent_message[:300].strip()
+        received = text[:300].strip()
+
+        # нормализация
+        sent = re.sub(r'\s+', ' ', sent)
+        received = re.sub(r'\s+', ' ', received)
+
+        # частичное совпадение
+        if sent[:150] in received:
+            return True
+
+        return False
+    
+    def _clean_html(self, html_content: str) -> str:
+        """
+        Очищает HTML от тегов, но сохраняет символы ``` и специальные символы.
+        """
+        if not html_content:
+            return ""
+        
+        text = html_content
+        text = text.replace('&lt;', '<')
+        text = text.replace('&gt;', '>')
+        text = text.replace('&amp;', '&')
+        text = text.replace('&quot;', '"')
+        text = text.replace('&#39;', "'")
+        text = text.replace('&nbsp;', ' ')
+        
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        text = text.strip()
+        
+        if '```' not in text and ('python' in text or 'bash' in text or 'copy' in text):
+            code_match = re.search(r'<pre><code[^>]*>(.*?)</code></pre>', html_content, re.DOTALL)
+            if code_match:
+                code_content = code_match.group(1)
+                code_content = code_content.replace('&lt;', '<').replace('&gt;', '>')
+                text = text + f"\n```\n{code_content}\n```"
+        
+        return text
+    
+    def _get_current_assistant_text(self) -> Optional[str]:
+        if not self.driver:
+            return None
+
+        try:
+            messages = self.driver.find_elements(By.CSS_SELECTOR, ".ds-message")
+
+            if not messages:
+                return None
+
+            # идём с конца (последние сообщения)
+            for msg in reversed(messages):
+                try:
+                    # 1. пробуем стандартный текст
+                    full_text = msg.text or ""
+    
+                    # 2. fallback если Selenium тупит
+                    if not full_text.strip():
+                        full_text = msg.get_attribute("innerText") or ""
+
+                    full_text = full_text.strip()
+    
+                    if not full_text:
+                        continue
+
+                    # 3. пропускаем своё сообщение
+                    if self._is_own_message(full_text):
+                        continue
+
+                    # 4. пропускаем мусор UI
+                    if self._is_garbage_response(full_text):
+                        continue
+
+                    # 5. защита от "пустых" коротких ответов UI
+                    if len(full_text) < 2:
+                        continue
+
+                    self._debug(f"FOUND MSG: {full_text[:100]}")
+                    return full_text
+    
+                except Exception as inner_e:
+                    self._debug(f"skip msg error: {inner_e}")
+                    continue
+
+            return None
+
+        except Exception as e:
+            self.log_callback(f"Ошибка получения текста: {str(e)}", "error")
+            return None
+    
+    def wait_for_new_assistant_message(self, last_assistant_id: Optional[str], timeout_seconds: int) -> Optional[str]:
+        start_time = time.time()
+        last_id = last_assistant_id
+        
+        self.log_callback(f"Ожидание ответа от ассистента (таймаут: {timeout_seconds}с)...", "info")
+        
+        while time.time() - start_time < timeout_seconds:
+            if not self.driver or not self.is_connected:
+                self.log_callback("Соединение с браузером потеряно", "error")
+                return None
+            
+            try:
+                # ===== ВСТАВЛЯЕМ ПРОВЕРКУ КНОПКИ CONTINUE ПОСЛЕ КАЖДОГО ФРАГМЕНТА =====
+                if self._check_and_click_continue(self.driver):
+                    # Кнопка была нажата → вызываем reset_timer через колбэк
+                    # Note: Timer будет передан через set_timer метод или доступен глобально
+                    if hasattr(self, '_timer') and self._timer:
+                        self._timer.reset_timer()
+                        self.log_callback("Таймер сброшен после нажатия Continue", "info")
+                    else:
+                        self.log_callback("Таймер не установлен для сброса", "warning")
+                # ===== КОНЕЦ ВСТАВКИ =====
+                
+                current_text = self._get_current_assistant_text()
+                current_id = self.get_last_assistant_message_id()
+                
+                self._debug(f"ID: {current_id}")
+                self._debug(f"TEXT LEN: {len(current_text) if current_text else 0}")
+
+                if current_text:
+                   self._debug(f"TEXT START: {current_text[:100]}")
+                
+                if current_text and len(current_text) > 20:
+                    #  если это наше же сообщение — пропускаем
+                    if self._is_own_message(current_text):
+                        self._debug("SKIP: own message detected")
+                        self.log_callback("ПРОПУЩЕНО: своё сообщение", "warning")
+                        time.sleep(1)
+                        continue
+                        
+                    self._debug(f"last_id={last_id}, current_id={current_id}")
+
+                    if current_text != self._last_text:
+                        self._last_text = current_text
+                        last_id = current_id
+
+                        elapsed = int(time.time() - start_time)
+                        elapsed_min = elapsed // 60
+                        elapsed_sec = elapsed % 60
+
+                        self.log_callback(f"Обнаружен ответ через {elapsed_min}мин{elapsed_sec:02d}с", "success")
+                        self.log_callback(f"Длина ответа: {len(current_text)} символов", "info")
+
+                        preview = self._truncate_text(current_text, 10)
+                        self.log_callback(f"=== СОДЕРЖАНИЕ ОТВЕТА ===\n{preview}", "info")
+
+                        return current_text
+                
+                # Fallback для старых кнопок (на всякий случай)
+                try:
+                    continue_btn = self.driver.find_elements(
+                        By.XPATH, 
+                        "//button[contains(text(), 'Продолжить') or contains(text(), 'Continue')]"
+                    )
+                    for btn in continue_btn:
+                        if btn.is_displayed() and btn.is_enabled():
+                            btn.click()
+                            self.log_callback("Нажата кнопка 'Продолжить' (fallback)", "success")
+                            time.sleep(2)
+                            break
+                except:
+                    pass
+                
+                elapsed = int(time.time() - start_time)
+                if elapsed > 0 and elapsed % 15 == 0 and elapsed < timeout_seconds - 5:
+                    remaining = timeout_seconds - elapsed
+                    remaining_min = remaining // 60
+                    remaining_sec = remaining % 60
+                    self.log_callback(f"Ожидание ответа... осталось {remaining_min}мин{remaining_sec:02d}с", "info")
+                
+                time.sleep(2)
+                
+            except Exception as e:
+                self.log_callback(f"Ошибка при ожидании: {str(e)}", "error")
+                time.sleep(2)
+        
+        self.log_callback(f"Таймаут {timeout_seconds}с истёк, ответ не получен", "warning")
+        return None
+    
+    def set_timer(self, timer) -> None:
+        """Устанавливает таймер для возможности сброса"""
+        self._timer = timer
+    
+    def send_message(self, message: str) -> bool:
+        if not self.driver or not self.is_connected:
+            self.log_callback("Нет подключения к браузеру", "error")
+            return False
+        
+        try:
+            wait = WebDriverWait(self.driver, 10)
+            input_field = wait.until(EC.presence_of_element_located((By.TAG_NAME, "textarea")))
+            
+            input_field.clear()
+            time.sleep(0.3)
+            
+            pyperclip.copy(message)
+            input_field.click()
+            time.sleep(0.3)
+            input_field.send_keys(Keys.CONTROL + 'v')
+            time.sleep(0.5)
+            
+            # Запоминаем отправляемое сообщение ДО нажатия Enter
+            self._last_sent_message = message
+            
+            # Запоминаем текущее количество сообщений в чате перед отправкой
+            messages_before = len(self.driver.find_elements(By.CSS_SELECTOR, "[data-message-role]"))
+            
+            input_field.send_keys(Keys.ENTER)
+            time.sleep(1.0)
+            
+            # Проверяем, что сообщение реально отправилось
+            try:
+                messages_after = len(self.driver.find_elements(By.CSS_SELECTOR, "[data-message-role]"))
+                if messages_after <= messages_before:
+                    current_value = input_field.get_attribute("value") or input_field.text or ""
+                    if current_value.strip():
+                        self.log_callback("ОШИБКА: Сообщение не отправилось (поле не очищено)", "error")
+                        self._last_sent_message = None
+                        return False
+            except:
+                pass
+            
+            line_count = len(message.split('\n'))
+            self.log_callback(f"Сообщение отправлено ({line_count} строк)", "success")
+            return True
+            
+        except Exception as e:
+            self.log_callback(f"Ошибка отправки: {str(e)}", "error")
+            self._last_sent_message = None
+            return False
+    
+    def click_continue_button(self) -> bool:
+        if not self.driver or not self.is_connected:
+            return False
+        
+        try:
+            elements = self.driver.find_elements(
+                By.XPATH, 
+                "//button[contains(text(), 'Продолжить') or contains(text(), 'Continue') or contains(text(), 'продолжить')]"
+            )
+            for elem in elements:
+                if elem.is_displayed() and elem.is_enabled():
+                    elem.click()
+                    self.log_callback("Нажата кнопка 'Продолжить'", "success")
+                    return True
+            return False
+        except:
+            return False
+    
+    def is_connected_check(self) -> bool:
+        """Проверка, что соединение с браузером активно"""
+        if not self.driver or not self.is_connected:
+            return False
+        try:
+            self.driver.title
+            return True
+        except:
+            self.is_connected = False
+            return False
+python
+Copy
+Download
+# файл: aic/handlers/stage_handler.py
+import os
+import time
+import random
+from datetime import datetime
+from typing import Optional, Callable, Union, List, Dict
+
+from aic.core.file_search import FileSearch
+from aic.handlers.token_parser import TokenParser
+from aic.utils.file_utils import FileUtils
+from aic.utils.text_utils import TextUtils
+
+class StageHandler:
+    """Обработчик этапов диалога"""
+    
+    # Путь к папке со стандартными файлами
+    STANDARD_FILES_PATH = "/home/lenovo/Documents/standard"
+    
+    def __init__(self, browser_manager, message_handler, timer, config, log_callback: Callable):
+        self.browser_manager = browser_manager
+        self.message_handler = message_handler
+        self.timer = timer
+        self.config = config
+        self.log = log_callback
+        self.file_search = FileSearch(log_callback)
+        
+        # Индексы окон
+        self.boss_window_index = None
+        self.analyst_window_index = None
+        self.chief_window_index = None
+        self.developer_window_index = None
+        
+        # Папка для сохранения выходных файлов
+        self.output_folder = "output"
+        FileUtils.ensure_folder(self.output_folder)
+        
+        # Счетчик реально выполненных этапов
+        self.completed_stages = 0
+        
+        # Устанавливаем таймер в message_handler для возможности сброса
+        if self.message_handler:
+            self.message_handler.set_timer(timer)
+    
+    def _send_stage_update(self, stage_num: int, stage_name: str):
+        """Отправка обновления этапа в UI"""
+        self.log(f"=== ЭТАП {stage_num}: {stage_name} ===", "info")
+    
+    def _save_to_output(self, content: str, filename_prefix: str, extension: str = "md") -> str:
+        """Сохранение содержимого в папку output"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{filename_prefix}_{timestamp}.{extension}"
+        filepath = os.path.join(self.output_folder, filename)
+        
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+            self.log(f"Сохранён файл: {filepath}", "success")
+            return filepath
+        except Exception as e:
+            self.log(f"Ошибка сохранения файла {filename}: {str(e)}", "error")
+            return None
+    
+    def _extract_code_block(self, response: str) -> str:
+        code_token = "=== КОД ==="
+        if code_token not in response:
+            return ""
+        
+        start_idx = response.find(code_token) + len(code_token)
+        next_token = "=== СТАТУС ==="
+        end_idx = response.find(next_token, start_idx)
+        
+        if end_idx == -1:
+            return response[start_idx:].strip()
+        return response[start_idx:end_idx].strip()
+    
+    def _extract_old_files(self, response: str) -> str:
+        old_files_token = "=== СТАРЫЕ ФАЙЛЫ ==="
+        if old_files_token not in response:
+            return ""
+        
+        start_idx = response.find(old_files_token) + len(old_files_token)
+        next_token = "=== СТАТУС ==="
+        end_idx = response.find(next_token, start_idx)
+        
+        if end_idx == -1:
+            return response[start_idx:].strip()
+        return response[start_idx:end_idx].strip()
+    
+    def _ensure_minimum_windows(self, required: int = 4) -> bool:
+        if not self.browser_manager or not self.browser_manager.is_connected:
+            self.log("Нет подключения к браузеру", "error")
+            return False
+        
+        window_count = self.browser_manager.windows_count
+        if window_count < required:
+            self.log(f"ОШИБКА: Требуется минимум {required} окна, доступно {window_count}", "error")
+            return False
+        
+        return True
+    
+    def _read_prompt_file(self, filename: str) -> str:
+        prompts_folder = self.config.prompts_folder
+        file_path = os.path.join(prompts_folder, filename)
+        content = FileUtils.read_file(file_path)
+        if not content or content.startswith("[Ошибка"):
+            return f"[Файл {filename} не найден]"
+        return content
+    
+    def _read_project_file(self, filename: str) -> Optional[str]:
+        if not self.config.project_folder:
+            return None
+        file_path = os.path.join(self.config.project_folder, filename)
+        content = FileUtils.read_file(file_path)
+        return content if content and not content.startswith("[Ошибка") else None
+    
+    def _read_standard_file(self, filename: str) -> Optional[str]:
+        file_path = os.path.join(self.STANDARD_FILES_PATH, filename)
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except Exception as e:
+                self.log(f"Ошибка чтения стандартного файла {filename}: {str(e)}", "error")
+                return None
+        return None
+    
+    def _get_project_files_content(self) -> str:
+        if not self.config.project_folder:
+            return ""
+        parts = []
+        for filename in ["CHANGELOG.md", "PROJECT_STRUCTURE.md"]:
+            content = self._read_project_file(filename)
+            if content:
+                parts.append(f"\n[ФАЙЛ {filename}]:\n{content}")
+        return "\n".join(parts)
+    
+    def _get_all_project_files_content(self) -> str:
+        if not self.config.project_folder:
+            return ""
+        parts = []
+        files_to_check = ["CHANGELOG.md", "PROJECT_STRUCTURE.md", "README.md", "FAQ.md", "ROADMAP.md"]
+        for filename in files_to_check:
+            content = self._read_project_file(filename)
+            if content:
+                parts.append(f"\n[ФАЙЛ {filename}]:\n{content}")
+        return "\n".join(parts)
+    
+    def _get_standard_files_content(self) -> str:
+        parts = []
+        standard_files = ["CHANGELOG.md", "FAQ.md", "README.md", "ROADMAP.md"]
+        
+        for filename in standard_files:
+            content = self._read_standard_file(filename)
+            if content:
+                parts.append(f"\n[СТАНДАРТНЫЙ ФАЙЛ {filename}]:\n{content}")
+            else:
+                self.log(f"Стандартный файл {filename} не найден в {self.STANDARD_FILES_PATH}", "warning")
+        
+        return "\n".join(parts)
+    
+    def _send_and_wait(self, message: str, target_name: str, custom_wait: int = None) -> Optional[str]:
+        last_id = self.message_handler.get_last_assistant_message_id()
+        wait_time = custom_wait if custom_wait else random.randint(self.config.min_wait_time, self.config.max_wait_time)
+        
+        if not self.message_handler.send_message(message):
+            self.log(f"Ошибка отправки сообщения {target_name}", "error")
+            return None
+        
+        self.timer.wait_with_countdown(wait_time)
+        response = self.message_handler.wait_for_new_assistant_message(last_id, wait_time)
+        
+        if not response:
+            self.log(f"Ответ от {target_name} не получен", "error")
+            return None
+        
+        return response
+    
+    # ========== ЭТАП 1: ПОЛЬЗОВАТЕЛЬ -> НАЧАЛЬНИК (окно 1) ==========
+    def execute_stage1_user_to_boss(self, user_message: str) -> Union[str, dict, None]:
+        self._send_stage_update(1, "пользователь -> начальник")
+        if not self._ensure_minimum_windows(4):
+            return None
+        
+        self.boss_window_index = 0
+        self.browser_manager.switch_to_window(self.boss_window_index)
+        
+        boss_prompt = self._read_prompt_file("Boss.txt")
+        parts = [boss_prompt]
+        if user_message:
+            parts.append(f"\n[СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ]:\n{user_message}")
+        project_files = self._get_project_files_content()
+        if project_files:
+            parts.append(project_files)
+        
+        message = TextUtils.remove_emojis("\n\n".join(parts))
+        
+        response = self._send_and_wait(message, "начальника")
+        if not response:
+            return None
+        
+        token = TokenParser.parse_boss_token(response)
+        clean_response = TokenParser.remove_boss_token(response)
+        
+        self.log(f"Ответ начальника (токен: {token})", "info")
+        
+        # Обработка всех возможных токенов начальника
+        if token == "WAITING_USER":
+            return {"type": "need_clarification", "message": clean_response}
+        elif token == "SENT_TO_USER":
+            return {"type": "sent_to_user", "message": clean_response}
+        elif token == "NEEDS_REVISION":
+            return {"type": "needs_revision", "message": clean_response}
+        elif token == "WAITING_ANALYST":
+            return clean_response
+        elif token == "WAITING_CHIEF":
+            return clean_response
+        elif token == "NEEDS_FULL_CYCLE":
+            return {"type": "need_full_cycle", "message": clean_response}
+        else:
+            self.log(f"Неизвестный токен начальника: {token}", "warning")
+            self.message_handler.send_message("НЕИЗВЕСНЫЙ СТАТУС! ПОДТВЕРДИТЕ СТАТУС")
+            return None
+    
+    # ========== ЭТАП 2: НАЧАЛЬНИК -> АНАЛИТИК (окно 2) ==========
+    def execute_stage2_boss_to_analyst(self, boss_response: str) -> Union[str, dict, None]:
+        self._send_stage_update(2, "начальник -> аналитик")
+        
+        self.analyst_window_index = 1
+        self.browser_manager.switch_to_window(self.analyst_window_index)
+        
+        time.sleep(2)
+        self.browser_manager.ensure_empty_chat()
+        
+        if not self.browser_manager.is_input_available():
+            self.log("Поле ввода недоступно", "error")
+            return None
+        
+        analyst_prompt = self._read_prompt_file("Analyst.txt")
+        parts = [analyst_prompt]
+        parts.append(f"\n[ТЗ ОТ НАЧАЛЬНИКА]:\n{boss_response}")
+        all_files = self._get_all_project_files_content()
+        if all_files:
+            parts.append(all_files)
+        
+        message = TextUtils.remove_emojis("\n\n".join(parts))
+        
+        response = self._send_and_wait(message, "аналитика")
+        if not response:
+            return None
+        
+        token = TokenParser.parse_analyst_token(response)
+        clean_response = TokenParser.remove_analyst_token(response)
+        
+        self.log(f"Ответ аналитика (токен: {token})", "info")
+        
+        # Обработка всех возможных токенов аналитика
+        if token == "SENT_TO_BOSS":
+            return clean_response
+        elif token == "SENT_TO_CHIEF":
+            return {"type": "to_chief_direct", "message": clean_response}
+        else:
+            self.log(f"Неизвестный токен аналитика: {token}", "warning")
+            self.message_handler.send_message("НЕИЗВЕСНЫЙ СТАТУС! ПОДТВЕРДИТЕ СТАТУС")
+            return None
+    
+    # ========== ЭТАП 3: АНАЛИТИК -> НАЧАЛЬНИК (окно 1) ==========
+    def execute_stage3_analyst_to_boss(self, analyst_response: str) -> Union[str, dict, None]:
+        self._send_stage_update(3, "аналитик -> начальник")
+        
+        self.browser_manager.switch_to_window(self.boss_window_index)
+        time.sleep(2)
+        
+        self.browser_manager.ensure_empty_chat()
+        
+        if not self.browser_manager.is_input_available():
+            self.log("Поле ввода в окне начальника недоступно", "error")
+            return None
+        
+        boss_prompt = self._read_prompt_file("Boss.txt")
+        parts = [boss_prompt]
+        parts.append(f"\n[УТОЧНЁННОЕ ТЗ ОТ АНАЛИТИКА]:\n{analyst_response}")
+        project_files = self._get_project_files_content()
+        if project_files:
+            parts.append(project_files)
+        
+        message = TextUtils.remove_emojis("\n\n".join(parts))
+        
+        response = self._send_and_wait(message, "начальника")
+        if not response:
+            return None
+        
+        token = TokenParser.parse_boss_token(response)
+        clean_response = TokenParser.remove_boss_token(response)
+        
+        self.log(f"Ответ начальника (токен: {token})", "info")
+        
+        attempt = 0
+        
+        # Бесконечный цикл доработки ТЗ (без ограничений)
+        while token == "NEEDS_REVISION":
+            attempt += 1
+            self.log(f"Начальник требует доработки (попытка {attempt})", "warning")
+            
+            self.browser

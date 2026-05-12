@@ -1,0 +1,7 @@
+AIC - Artificial Intelligence Company v2.0 запущена
+URL: http://localhost:1234/v1/chat/completions
+Модель: qwen/qwen3-coder-30b
+Статус: ожидание подключения к LM Studio
+LM Studio доступен
+Успешно подключено к LM Studio!
+Отключено от LM Studio

@@ -1,0 +1,678 @@
+Я — разработчик. Получил замечания от Главного разработчика. Исправляю критическую ошибку и создаю отдельный файл для ColorPickerDialog.
+=== КОД ===
+python
+Copy
+Download
+# файл: viewmodels/calculator_viewmodel.py (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QColor
+import threading
+import json
+import os
+from models.color_settings import ColorSettings
+
+class CalculatorViewModel(QObject):
+    """ViewModel для калькулятора, связывает Model и View"""
+    
+    # Сигналы для обновления View
+    display_updated = Signal(str)
+    error_occurred = Signal(str)
+    voice_processing_started = Signal()
+    voice_processing_finished = Signal()
+    color_theme_changed = Signal(dict)  # Сигнал об изменении цветовой темы
+    
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.current_expression = ""
+        self.display_text = ""
+        self.voice_handler = None
+        self.command_parser = None
+        self.is_voice_active = False
+        self.voice_thread = None
+        self.voice_lock = threading.Lock()  # ИСПРАВЛЕНО: было threading.lock, теперь threading.Lock()
+        
+        # Инициализация настроек цветов со значениями по умолчанию
+        self.color_settings = ColorSettings(digit_color="#FFFFFF", operator_color="#FFA500")
+    
+    def set_voice_handler(self, handler):
+        """Установка обработчика голосового ввода"""
+        self.voice_handler = handler
+    
+    def set_command_parser(self, parser):
+        """Установка парсера голосовых команд"""
+        self.command_parser = parser
+    
+    def load_color_theme(self) -> dict:
+        """
+        Загружает цветовую тему из файла color_theme.json
+        
+        Returns:
+            dict: Словарь с цветами {"digit": color, "operator": color}
+        """
+        theme_file = "color_theme.json"
+        default_theme = {
+            "digit": self.color_settings.get_digit_color(),
+            "operator": self.color_settings.get_operator_color()
+        }
+        
+        if os.path.exists(theme_file):
+            try:
+                with open(theme_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # Обновляем color_settings из данных
+                self.color_settings.from_dict(data)
+                
+                return {
+                    "digit": self.color_settings.get_digit_color(),
+                    "operator": self.color_settings.get_operator_color()
+                }
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Ошибка загрузки цветовой темы: {e}")
+                return default_theme
+        else:
+            return default_theme
+    
+    def save_color_theme(self, theme_dict: dict) -> None:
+        """
+        Сохраняет цветовую тему в файл color_theme.json
+        
+        Args:
+            theme_dict (dict): Словарь с цветами {"digit": color, "operator": color}
+        """
+        theme_file = "color_theme.json"
+        
+        # Обновляем color_settings
+        if "digit" in theme_dict:
+            self.color_settings.set_digit_color(theme_dict["digit"])
+        if "operator" in theme_dict:
+            self.color_settings.set_operator_color(theme_dict["operator"])
+        
+        # Сохраняем в файл
+        try:
+            with open(theme_file, 'w', encoding='utf-8') as f:
+                json.dump(self.color_settings.to_dict(), f, ensure_ascii=False, indent=2)
+        except IOError as e:
+            print(f"Ошибка сохранения цветовой темы: {e}")
+    
+    def change_button_colors(self, button_type: str, new_color: str) -> dict:
+        """
+        Изменяет цвет кнопок определенного типа
+        
+        Args:
+            button_type (str): Тип кнопок ("digit" или "operator")
+            new_color (str): Новый цвет в HEX формате (например, "#FFA500")
+        
+        Returns:
+            dict: Обновленные цвета {"digit": color, "operator": color}
+        """
+        if button_type == "digit":
+            self.color_settings.set_digit_color(new_color)
+        elif button_type == "operator":
+            self.color_settings.set_operator_color(new_color)
+        else:
+            raise ValueError(f"Неизвестный тип кнопки: {button_type}")
+        
+        # Сохраняем изменения
+        theme_dict = {
+            "digit": self.color_settings.get_digit_color(),
+            "operator": self.color_settings.get_operator_color()
+        }
+        self.save_color_theme(theme_dict)
+        
+        # Отправляем сигнал об изменении цветов
+        self.color_theme_changed.emit(theme_dict)
+        
+        return theme_dict
+    
+    def on_number_clicked(self, digit):
+        """Обработка нажатия цифровой кнопки"""
+        self.current_expression += str(digit)
+        self.update_display(self.current_expression)
+    
+    def on_operator_clicked(self, op):
+        """Обработка нажатия кнопки оператора"""
+        self.current_expression += op
+        self.update_display(self.current_expression)
+    
+    def on_equal_clicked(self):
+        """Обработка нажатия кнопки = (вычисляет текущее выражение)"""
+        if not self.current_expression:
+            return
+        
+        try:
+            result = self.model.evaluate_expression(self.current_expression)
+            self.display_text = str(result)
+            self.current_expression = str(result)
+            self.update_display(self.display_text)
+        except ZeroDivisionError as e:
+            self.error_occurred.emit(str(e))
+            self.current_expression = ""
+            self.update_display("")
+        except ValueError as e:
+            self.error_occurred.emit(str(e))
+            self.current_expression = ""
+            self.update_display("")
+        except Exception as e:
+            self.error_occurred.emit(f"Неизвестная ошибка: {str(e)}")
+            self.current_expression = ""
+            self.update_display("")
+    
+    def on_clear_clicked(self):
+        """Обработка нажатия кнопки C (очистка)"""
+        self.current_expression = ""
+        self.display_text = ""
+        self.update_display("")
+    
+    def set_expression_from_view(self, expression):
+        """
+        Устанавливает выражение из строки формул (для Excel-стиля)
+        
+        Args:
+            expression (str): Выражение из строки ввода
+        """
+        self.current_expression = expression
+        self.update_display(expression)
+    
+    def evaluate_from_formula_line(self, expression):
+        """
+        Вычисляет выражение из строки формул (Excel-стиль)
+        
+        Args:
+            expression (str): Выражение из строки ввода
+        """
+        if not expression:
+            return
+        
+        self.current_expression = expression
+        self.on_equal_clicked()
+    
+    def on_voice_input_triggered(self):
+        """Обработка активации голосового ввода (запуск/остановка)"""
+        if not self.voice_handler or not self.command_parser:
+            self.error_occurred.emit("Голосовой ввод не доступен")
+            return
+        
+        with self.voice_lock:
+            if self.is_voice_active:
+                # Останавливаем распознавание
+                self.stop_voice_recognition()
+            else:
+                # Запускаем распознавание
+                self.start_voice_recognition()
+    
+    def start_voice_recognition(self):
+        """Запуск распознавания голоса"""
+        if self.is_voice_active:
+            return
+        
+        self.is_voice_active = True
+        self.voice_processing_started.emit()
+        
+        def process_voice():
+            try:
+                # Захват и распознавание речи
+                text = self.voice_handler.recognize_speech()
+                
+                # Проверяем, не был ли процесс остановлен
+                if not self.is_voice_active:
+                    return
+                
+                if text and text != "Не распознано":
+                    # Парсинг распознанного текста
+                    parsed_expression = self.command_parser.parse_voice_text(text)
+                    if parsed_expression:
+                        # Добавляем распознанное выражение к текущему
+                        self.current_expression += parsed_expression
+                        self.update_display(self.current_expression)
+                    else:
+                        self.error_occurred.emit("Не удалось распознать команду")
+                else:
+                    self.error_occurred.emit(text if text else "Не распознано")
+            except Exception as e:
+                self.error_occurred.emit(f"Ошибка голосового ввода: {str(e)}")
+            finally:
+                with self.voice_lock:
+                    self.is_voice_active = False
+                self.voice_processing_finished.emit()
+        
+        self.voice_thread = threading.Thread(target=process_voice, daemon=True)
+        self.voice_thread.start()
+    
+    def stop_voice_recognition(self):
+        """Остановка распознавания голоса"""
+        if not self.is_voice_active:
+            return
+        
+        # Останавливаем обработчик
+        if self.voice_handler:
+            self.voice_handler.stop_listening()
+        
+        self.is_voice_active = False
+        self.voice_processing_finished.emit()
+    
+    def update_display(self, text):
+        """Обновление отображаемого текста"""
+        self.display_text = text
+        self.display_updated.emit(text)
+    
+    def add_to_expression(self, text):
+        """Добавление текста к текущему выражению"""
+        self.current_expression += text
+        self.update_display(self.current_expression)
+=== СТАТУС ===
+ГОТОВО К ПРОВЕРКЕ
+=== КОД ===
+python
+Copy
+Download
+# файл: views/color_picker_dialog.py
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QPushButton, QLabel
+from PySide6.QtCore import Qt
+
+class ColorPickerDialog(QDialog):
+    """Диалог выбора типа кнопок для изменения цвета"""
+    
+    def __init__(self, parent=None):
+        """
+        Инициализация диалога выбора цвета
+        
+        Args:
+            parent: Родительский виджет
+        """
+        super().__init__(parent)
+        self.selected_type = None
+        self.setup_ui()
+    
+    def setup_ui(self):
+        """Настройка пользовательского интерфейса диалога"""
+        self.setWindowTitle("Выбор цвета кнопок")
+        self.setFixedSize(300, 150)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        
+        layout = QVBoxLayout(self)
+        
+        label = QLabel("Выберите тип кнопок для изменения цвета:")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        
+        self.digit_button = QPushButton("Цифровые кнопки (0-9)")
+        self.operator_button = QPushButton("Кнопки операций (+ - * / = C ( ) . Голос)")
+        
+        self.digit_button.clicked.connect(lambda: self.accept_with_type("digit"))
+        self.operator_button.clicked.connect(lambda: self.accept_with_type("operator"))
+        
+        layout.addWidget(self.digit_button)
+        layout.addWidget(self.operator_button)
+        
+        # Устанавливаем стили для кнопок
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f0f0f0;
+            }
+            QLabel {
+                font-size: 14px;
+                padding: 10px;
+            }
+            QPushButton {
+                font-size: 14px;
+                padding: 10px;
+                margin: 5px;
+                border: 1px solid #999;
+                border-radius: 3px;
+                background-color: #ffffff;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+            QPushButton:pressed {
+                background-color: #d0d0d0;
+            }
+        """)
+    
+    def accept_with_type(self, button_type):
+        """
+        Принимает диалог с выбранным типом кнопок
+        
+        Args:
+            button_type (str): Тип кнопок ("digit" или "operator")
+        """
+        self.selected_type = button_type
+        self.accept()
+    
+    def get_selected_type(self):
+        """
+        Возвращает выбранный тип кнопок
+        
+        Returns:
+            str: Тип кнопок ("digit" или "operator") или None если выбор не сделан
+        """
+        return self.selected_type
+=== СТАТУС ===
+ГОТОВО К ПРОВЕРКЕ
+=== КОД ===
+python
+Copy
+Download
+# файл: views/calculator_view.py (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
+                                QGridLayout, QPushButton, QLineEdit, QHBoxLayout, QColorDialog)
+from PySide6.QtCore import Qt, Slot
+from views.color_picker_dialog import ColorPickerDialog
+
+class CalculatorView(QMainWindow):
+    """View для калькулятора с Excel-стилем"""
+    
+    def __init__(self, view_model):
+        super().__init__()
+        self.view_model = view_model
+        self.digit_buttons = []  # Список цифровых кнопок (0-9)
+        self.operator_buttons = []  # Список кнопок операций
+        self.setup_ui()
+        self.bind_commands()
+        
+        # Подключаем сигналы ViewModel
+        self.view_model.display_updated.connect(self.update_display_slot)
+        self.view_model.error_occurred.connect(self.show_error)
+        self.view_model.voice_processing_started.connect(self.on_voice_started)
+        self.view_model.voice_processing_finished.connect(self.on_voice_finished)
+        self.view_model.color_theme_changed.connect(self.on_color_theme_changed)
+        
+        # Загружаем цвета после создания кнопок
+        colors = self.view_model.load_color_theme()
+        self.apply_color_to_buttons(colors["digit"], "digit")
+        self.apply_color_to_buttons(colors["operator"], "operator")
+        
+        self.setWindowTitle("Калькулятор Excel-стиль с голосовым вводом")
+        self.setFixedSize(450, 550)
+    
+    def setup_ui(self):
+        """Настройка пользовательского интерфейса"""
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        main_layout = QVBoxLayout(central_widget)
+        
+        # Верхняя панель со строкой формул и кнопкой настроек
+        top_panel = QHBoxLayout()
+        
+        # Строка формул (как в Excel)
+        self.formula_line = QLineEdit()
+        self.formula_line.setPlaceholderText("Введите выражение или используйте голос...")
+        self.formula_line.setStyleSheet("""
+            QLineEdit {
+                font-size: 18px;
+                padding: 10px;
+                border: 2px solid #ccc;
+                border-radius: 5px;
+                min-height: 40px;
+            }
+        """)
+        top_panel.addWidget(self.formula_line)
+        
+        # Кнопка "Настройки"
+        self.settings_button = QPushButton("⚙️ Настройки")
+        self.settings_button.setStyleSheet("""
+            QPushButton {
+                font-size: 14px;
+                padding: 10px;
+                margin: 2px;
+                border: 1px solid #999;
+                border-radius: 3px;
+                background-color: #e0e0e0;
+                min-width: 100px;
+            }
+            QPushButton:hover {
+                background-color: #d0d0d0;
+            }
+            QPushButton:pressed {
+                background-color: #c0c0c0;
+            }
+        """)
+        self.settings_button.clicked.connect(self.show_color_picker)
+        top_panel.addWidget(self.settings_button)
+        
+        main_layout.addLayout(top_panel)
+        
+        # Сетка кнопок 5x5
+        self.button_grid = QGridLayout()
+        main_layout.addLayout(self.button_grid)
+        
+        # Определяем кнопки согласно ТЗ (сетка 5x5)
+        buttons = [
+            ['1', '2', '3', '+', '('],
+            ['4', '5', '6', '-', ')'],
+            ['7', '8', '9', '*', 'Голос'],
+            ['0', '.', '/', '=', 'C']
+        ]
+        
+        # Создаем кнопки
+        self.buttons = {}
+        for row, row_buttons in enumerate(buttons):
+            for col, btn_text in enumerate(row_buttons):
+                button = QPushButton(btn_text)
+                button.setStyleSheet("""
+                    QPushButton {
+                        font-size: 16px;
+                        padding: 15px;
+                        margin: 2px;
+                        border: 1px solid #999;
+                        border-radius: 3px;
+                    }
+                    QPushButton:hover {
+                        background-color: #e0e0e0;
+                    }
+                    QPushButton:pressed {
+                        background-color: #d0d0d0;
+                    }
+                """)
+                self.button_grid.addWidget(button, row, col)
+                self.buttons[btn_text] = button
+                
+                # Заполняем списки для последующего изменения цветов
+                if btn_text.isdigit():  # Цифры 0-9
+                    self.digit_buttons.append(button)
+                elif btn_text in ['+', '-', '*', '/', '=', 'C', '(', ')', '.', 'Голос']:
+                    self.operator_buttons.append(button)
+        
+        self.formula_line.setFocus()
+    
+    def bind_commands(self):
+        """Привязка команд к кнопкам"""
+        # Цифры
+        for digit in '0123456789':
+            if digit in self.buttons:
+                self.buttons[digit].clicked.connect(
+                    lambda checked, d=digit: self.view_model.on_number_clicked(d)
+                )
+        
+        # Операторы
+        operators = {'+', '-', '*', '/', '(', ')'}
+        for op in operators:
+            if op in self.buttons:
+                self.buttons[op].clicked.connect(
+                    lambda checked, o=op: self.view_model.on_operator_clicked(o)
+                )
+        
+        # Кнопка равно
+        if '=' in self.buttons:
+            self.buttons['='].clicked.connect(self.on_equal_clicked)
+        
+        # Кнопка очистки
+        if 'C' in self.buttons:
+            self.buttons['C'].clicked.connect(self.view_model.on_clear_clicked)
+        
+        # Кнопка голосового ввода
+        if 'Голос' in self.buttons:
+            self.buttons['Голос'].clicked.connect(self.view_model.on_voice_input_triggered)
+        
+        # Кнопка десятичной точки
+        if '.' in self.buttons:
+            self.buttons['.'].clicked.connect(
+                lambda checked: self.view_model.on_operator_clicked('.')
+            )
+        
+        # Подключаем ввод через строку формул (Excel-стиль)
+        self.formula_line.returnPressed.connect(self.on_formula_entered)
+        self.formula_line.textChanged.connect(self.on_formula_text_changed)
+    
+    def show_color_picker(self):
+        """Показывает диалог выбора цвета для кнопок"""
+        dialog = ColorPickerDialog(self)
+        if dialog.exec():
+            button_type = dialog.get_selected_type()
+            if button_type:
+                self._pick_color(button_type)
+    
+    def _pick_color(self, button_type):
+        """
+        Открывает стандартный диалог выбора цвета
+        
+        Args:
+            button_type (str): Тип кнопок ("digit" или "operator")
+        """
+        # Открываем диалог выбора цвета
+        color = QColorDialog.getColor()
+        
+        if color.isValid():
+            hex_color = color.name()  # Получаем цвет в формате #RRGGBB
+            self.on_color_selected(hex_color, button_type)
+    
+    def on_color_selected(self, color, button_type):
+        """
+        Обработчик выбора цвета в диалоге
+        
+        Args:
+            color (str): Выбранный цвет в HEX формате
+            button_type (str): Тип кнопок ("digit" или "operator")
+        """
+        # Передаем в ViewModel для сохранения
+        updated_colors = self.view_model.change_button_colors(button_type, color)
+        
+        # Применяем цвета к кнопкам
+        self.apply_color_to_buttons(updated_colors["digit"], "digit")
+        self.apply_color_to_buttons(updated_colors["operator"], "operator")
+    
+    def apply_color_to_buttons(self, color, button_type):
+        """
+        Применяет цвет ко всем кнопкам указанного типа
+        
+        Args:
+            color (str): Цвет в HEX формате (например, "#FFA500")
+            button_type (str): Тип кнопок ("digit" или "operator")
+        """
+        if button_type == "digit":
+            buttons_list = self.digit_buttons
+        elif button_type == "operator":
+            buttons_list = self.operator_buttons
+        else:
+            return
+        
+        for button in buttons_list:
+            # Применяем новый цвет фона с hover-эффектами
+            button.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {color};
+                    font-size: 16px;
+                    padding: 15px;
+                    margin: 2px;
+                    border: 1px solid #999;
+                    border-radius: 3px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self._adjust_brightness(color, 0.9)};
+                }}
+                QPushButton:pressed {{
+                    background-color: {self._adjust_brightness(color, 0.8)};
+                }}
+            """)
+    
+    def _adjust_brightness(self, hex_color, factor):
+        """
+        Изменяет яркость цвета для эффектов наведения/нажатия
+        
+        Args:
+            hex_color (str): HEX цвет
+            factor (float): Множитель яркости (0.8 = темнее, 1.2 = светлее)
+        
+        Returns:
+            str: Новый HEX цвет
+        """
+        from PySide6.QtGui import QColor
+        
+        color = QColor(hex_color)
+        h, s, v, a = color.getHsv()
+        v = int(v * factor)
+        v = max(0, min(255, v))
+        new_color = QColor()
+        new_color.setHsv(h, s, v, a)
+        return new_color.name()
+    
+    def on_color_theme_changed(self, colors_dict):
+        """
+        Слот для обработки изменения цветовой темы от ViewModel
+        
+        Args:
+            colors_dict (dict): Словарь с цветами {"digit": color, "operator": color}
+        """
+        self.apply_color_to_buttons(colors_dict["digit"], "digit")
+        self.apply_color_to_buttons(colors_dict["operator"], "operator")
+    
+    def on_equal_clicked(self):
+        """Обработка нажатия кнопки ="""
+        # В Excel-стиле при нажатии = вычисляется содержимое строки формул
+        expression = self.formula_line.text()
+        self.view_model.evaluate_from_formula_line(expression)
+    
+    def on_formula_entered(self):
+        """Обработка ввода формулы в строку (нажатие Enter)"""
+        expression = self.formula_line.text()
+        self.view_model.evaluate_from_formula_line(expression)
+    
+    def on_formula_text_changed(self, text):
+        """
+        Синхронизация строки формул с current_expression
+        При ручном вводе в строку обновляем выражение в ViewModel
+        """
+        self.view_model.set_expression_from_view(text)
+    
+    @Slot(str)
+    def update_display_slot(self, value):
+        """Обновление отображения"""
+        # Обновляем строку формул
+        self.formula_line.setText(value)
+    
+    @Slot(str)
+    def show_error(self, message):
+        """Отображение ошибки"""
+        self.formula_line.setText(f"Ошибка: {message}")
+        # Таймер для очистки сообщения об ошибке через 2 секунды
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(2000, lambda: self.formula_line.setText(""))
+    
+    @Slot()
+    def on_voice_started(self):
+        """Обработка начала голосового ввода"""
+        # Временно меняем стиль кнопки Голос
+        self.buttons['Голос'].setStyleSheet("""
+            QPushButton {
+                font-size: 16px;
+                padding: 15px;
+                margin: 2px;
+                border: 1px solid #999;
+                border-radius: 3px;
+                background-color: #ff9999;
+            }
+        """)
+        self.formula_line.setPlaceholderText("Слушаю... Говорите... (нажмите Голос для остановки)")
+    
+    @Slot()
+    def on_voice_finished(self):
+        """Обработка завершения голосового ввода"""
+        # Восстанавливаем цвет из текущей темы
+        current_color = self.view_model.color_settings.get_operator_color()
+        self.apply_color_to_buttons(current_color, "operator")
+        self.formula_line.setPlaceholderText("Введите выражение или используйте голос...")
+=== СТАТУС ===
+ГОТОВО К ПРОВЕРКЕ
